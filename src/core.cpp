@@ -197,40 +197,23 @@ void GridMap::resize(int nextCols, int nextRows, int nextCellSize) {
     rows = nextRows;
     cellSize = nextCellSize;
     grid_.clear();
-    grid_.resize(cols);
+    grid_.reserve(static_cast<std::size_t>(cols * rows));
     for (int c = 0; c < cols; ++c) {
-        grid_[c].reserve(rows);
         for (int r = 0; r < rows; ++r) {
-            grid_[c].emplace_back(CellState::Empty, c, r, c * cellSize, r * cellSize);
+            grid_.emplace_back(CellState::Empty, c, r, c * cellSize, r * cellSize);
         }
     }
 }
 
 void GridMap::fillGrid(CellState state, bool ignoreWalls) {
-    for (auto& col : grid_) {
-        for (auto& cell : col) {
-            if (ignoreWalls && cell.state == CellState::Wall) {
-                continue;
-            }
-            cell.setType(state);
-            cell.owner = nullptr;
-            cell.cellOwner = nullptr;
+    for (auto& cell : grid_) {
+        if (ignoreWalls && cell.state == CellState::Wall) {
+            continue;
         }
+        cell.setType(state);
+        cell.owner = nullptr;
+        cell.cellOwner = nullptr;
     }
-}
-
-GridCell* GridMap::cellAt(int col, int row) {
-    if (!isValidLoc(col, row)) {
-        return nullptr;
-    }
-    return &grid_[col][row];
-}
-
-const GridCell* GridMap::cellAt(int col, int row) const {
-    if (!isValidLoc(col, row)) {
-        return nullptr;
-    }
-    return &grid_[col][row];
 }
 
 void GridMap::setCellType(int col, int row, CellState state) {
@@ -244,10 +227,6 @@ void GridMap::setCellOwner(int col, int row, BodyCell* cellOwner) {
         cell->cellOwner = cellOwner;
         cell->owner = cellOwner == nullptr ? nullptr : cellOwner->org;
     }
-}
-
-bool GridMap::isValidLoc(int col, int row) const {
-    return col < cols && row < rows && col >= 0 && row >= 0;
 }
 
 std::pair<int, int> GridMap::center() const {
@@ -760,13 +739,14 @@ void FossilRecord::updateData() {
     speciesCounts.push_back(numExtantSpecies());
     averageMutRates.push_back(env_->averageMutability());
     calcCellCountAverages();
-    while (tickRecord.size() > recordSizeLimit) {
-        tickRecord.erase(tickRecord.begin());
-        popCounts.erase(popCounts.begin());
-        speciesCounts.erase(speciesCounts.begin());
-        averageMutRates.erase(averageMutRates.begin());
-        averageCells.erase(averageCells.begin());
-        averageCellCounts.erase(averageCellCounts.begin());
+    if (tickRecord.size() > recordSizeLimit) {
+        std::size_t overflow = tickRecord.size() - recordSizeLimit;
+        tickRecord.erase(tickRecord.begin(), tickRecord.begin() + static_cast<std::ptrdiff_t>(overflow));
+        popCounts.erase(popCounts.begin(), popCounts.begin() + static_cast<std::ptrdiff_t>(overflow));
+        speciesCounts.erase(speciesCounts.begin(), speciesCounts.begin() + static_cast<std::ptrdiff_t>(overflow));
+        averageMutRates.erase(averageMutRates.begin(), averageMutRates.begin() + static_cast<std::ptrdiff_t>(overflow));
+        averageCells.erase(averageCells.begin(), averageCells.begin() + static_cast<std::ptrdiff_t>(overflow));
+        averageCellCounts.erase(averageCellCounts.begin(), averageCellCounts.begin() + static_cast<std::ptrdiff_t>(overflow));
     }
 }
 
@@ -774,9 +754,10 @@ void FossilRecord::calcCellCountAverages() {
     std::array<double, CellStateCount> cellCounts{};
     double totalOrg = 0.0;
     bool first = true;
+    int extantCount = numExtantSpecies();
     for (const auto& [name, species] : extantSpecies) {
         (void)name;
-        if (!first && numExtantSpecies() > 10 && species->cumulativePop < minDiscard) {
+        if (!first && extantCount > 10 && species->cumulativePop < minDiscard) {
             continue;
         }
         for (CellState state : livingStates()) {
@@ -1098,7 +1079,8 @@ WorldEnvironment::WorldEnvironment(int cellSize, int cols, int rows, std::uint32
 void WorldEnvironment::update() {
     std::vector<std::size_t> toRemove;
     std::size_t startSize = organisms.size();
-    for (std::size_t i = 0; i < startSize && i < organisms.size(); ++i) {
+    toRemove.reserve(startSize / 8);
+    for (std::size_t i = 0; i < startSize; ++i) {
         Organism& organism = *organisms[i];
         if (!organism.living || !organism.update()) {
             toRemove.push_back(i);
@@ -1115,15 +1097,34 @@ void WorldEnvironment::update() {
 }
 
 void WorldEnvironment::removeOrganisms(const std::vector<std::size_t>& organismIndexes) {
+    if (organismIndexes.empty()) {
+        return;
+    }
     int startPop = static_cast<int>(organisms.size());
     std::vector<std::size_t> sorted = organismIndexes;
-    std::sort(sorted.rbegin(), sorted.rend());
+    std::sort(sorted.begin(), sorted.end());
+    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+
+    std::vector<std::unique_ptr<Organism>> survivors;
+    survivors.reserve(organisms.size() - std::min(sorted.size(), organisms.size()));
+    std::size_t removeCursor = 0;
     for (std::size_t index : sorted) {
         if (index < organisms.size()) {
             totalMutability -= organisms[index]->mutability;
-            organisms.erase(organisms.begin() + static_cast<std::ptrdiff_t>(index));
         }
     }
+    for (std::size_t i = 0; i < organisms.size(); ++i) {
+        while (removeCursor < sorted.size() && sorted[removeCursor] < i) {
+            ++removeCursor;
+        }
+        if (removeCursor < sorted.size() && sorted[removeCursor] == i) {
+            ++removeCursor;
+            continue;
+        }
+        survivors.push_back(std::move(organisms[i]));
+    }
+    organisms.swap(survivors);
+
     if (organisms.empty() && startPop > 0) {
         if (config.autoReset && !config.autoPause) {
             ++resetCount;
@@ -1167,9 +1168,15 @@ double WorldEnvironment::averageMutability() const {
 }
 
 void WorldEnvironment::changeCell(int col, int row, CellState state, BodyCell* owner) {
-    gridMap.setCellType(col, row, state);
-    gridMap.setCellOwner(col, row, owner);
-    if (state == CellState::Wall) {
+    GridCell* cell = gridMap.cellAt(col, row);
+    if (cell == nullptr) {
+        return;
+    }
+    bool addedNewWall = state == CellState::Wall && cell->state != CellState::Wall;
+    cell->setType(state);
+    cell->cellOwner = owner;
+    cell->owner = owner == nullptr ? nullptr : owner->org;
+    if (addedNewWall) {
         walls.push_back({col, row});
     }
 }
@@ -1181,6 +1188,7 @@ void WorldEnvironment::clearWalls() {
             changeCell(wall.first, wall.second, CellState::Empty, nullptr);
         }
     }
+    walls.clear();
 }
 
 void WorldEnvironment::clearOrganisms() {
@@ -1192,6 +1200,7 @@ void WorldEnvironment::clearOrganisms() {
 
 void WorldEnvironment::clearDeadOrganisms() {
     std::vector<std::size_t> toRemove;
+    toRemove.reserve(organisms.size() / 8);
     for (std::size_t i = 0; i < organisms.size(); ++i) {
         if (!organisms[i]->living) {
             toRemove.push_back(i);
@@ -1217,6 +1226,9 @@ void WorldEnvironment::generateFood() {
 bool WorldEnvironment::reset(bool resetLife) {
     organisms.clear();
     gridMap.fillGrid(CellState::Empty, !config.clearWallsOnReset);
+    if (config.clearWallsOnReset) {
+        walls.clear();
+    }
     totalMutability = 0;
     totalTicks = 0;
     fossilRecord.clearRecord();

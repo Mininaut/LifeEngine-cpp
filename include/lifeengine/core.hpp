@@ -115,11 +115,27 @@ public:
 
     void resize(int cols, int rows, int cellSize);
     void fillGrid(CellState state, bool ignoreWalls = false);
-    GridCell* cellAt(int col, int row);
-    const GridCell* cellAt(int col, int row) const;
+    GridCell* cellAt(int col, int row) {
+        if (!isValidLoc(col, row)) {
+            return nullptr;
+        }
+        return &grid_[static_cast<std::size_t>(col * rows + row)];
+    }
+
+    const GridCell* cellAt(int col, int row) const {
+        if (!isValidLoc(col, row)) {
+            return nullptr;
+        }
+        return &grid_[static_cast<std::size_t>(col * rows + row)];
+    }
+
     void setCellType(int col, int row, CellState state);
     void setCellOwner(int col, int row, BodyCell* cellOwner);
-    bool isValidLoc(int col, int row) const;
+
+    bool isValidLoc(int col, int row) const {
+        return col < cols && row < rows && col >= 0 && row >= 0;
+    }
+
     std::pair<int, int> center() const;
     std::pair<int, int> xyToColRow(int x, int y) const;
 
@@ -128,7 +144,7 @@ public:
     int cellSize = 1;
 
 private:
-    std::vector<std::vector<GridCell>> grid_;
+    std::vector<GridCell> grid_;
 };
 
 struct Observation {

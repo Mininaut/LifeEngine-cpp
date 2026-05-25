@@ -202,6 +202,35 @@ void testAutoResetReseedsOrigin() {
     check(env.fossilRecord.numExtantSpecies() == 1, "auto reset recreates species");
 }
 
+void testRemoveOrganismsCompactsInOnePass() {
+    lifeengine::WorldEnvironment env(1, 20, 20, 11);
+    env.config.autoReset = false;
+    lifeengine::Organism& first = addSingleCellOrganism(env, 1, 1, lifeengine::CellState::Mouth);
+    addSingleCellOrganism(env, 2, 2, lifeengine::CellState::Mouth);
+    lifeengine::Organism& third = addSingleCellOrganism(env, 3, 3, lifeengine::CellState::Mouth);
+    addSingleCellOrganism(env, 4, 4, lifeengine::CellState::Mouth);
+
+    env.removeOrganisms({3, 1, 1, 99});
+
+    check(env.organismCount() == 2, "remove organisms compacts survivors");
+    check(env.organisms[0].get() == &first, "remove organisms keeps first survivor");
+    check(env.organisms[1].get() == &third, "remove organisms preserves survivor order");
+    check(env.totalMutability == first.mutability + third.mutability, "remove organisms updates total mutability");
+}
+
+void testRepeatedWallWritesDoNotDuplicateWallIndex() {
+    lifeengine::WorldEnvironment env(1, 10, 10, 12);
+
+    env.changeCell(3, 3, lifeengine::CellState::Wall, nullptr);
+    env.changeCell(3, 3, lifeengine::CellState::Wall, nullptr);
+    env.changeCell(3, 3, lifeengine::CellState::Wall, nullptr);
+
+    check(env.walls.size() == 1, "repeated wall writes keep one wall index");
+    env.clearWalls();
+    check(env.gridMap.cellAt(3, 3)->state == lifeengine::CellState::Empty, "clear walls clears deduplicated wall");
+    check(env.walls.empty(), "clear walls drops wall index cache");
+}
+
 } // namespace
 
 int main() {
@@ -219,6 +248,8 @@ int main() {
     testFossilRecordCap();
     testOriginOfLife();
     testAutoResetReseedsOrigin();
+    testRemoveOrganismsCompactsInOnePass();
+    testRepeatedWallWritesDoNotDuplicateWallIndex();
 
     if (failures != 0) {
         std::cerr << failures << " test(s) failed\n";
