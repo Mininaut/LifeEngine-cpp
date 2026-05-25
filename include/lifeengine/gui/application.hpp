@@ -154,6 +154,7 @@ public:
     void resizeGridToCanvas(int canvasWidth, int canvasHeight, int cellSize);
     void randomizeWalls(double densityPercent = 4.0);
     void applyToolAt(int col, int row, bool secondary = false);
+    bool dropEditorOrganismAt(int col, int row);
     void applyRulesFromSettings();
     StatsSnapshot stats() const;
 

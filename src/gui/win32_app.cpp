@@ -1,4 +1,5 @@
 #include "lifeengine/gui/application.hpp"
+#include "lifeengine/gui/renderer.hpp"
 
 #ifdef _WIN32
 
@@ -17,14 +18,16 @@
 #include <cwchar>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 namespace lifeengine::gui {
 namespace {
 
 constexpr int kTimerId = 1;
 constexpr int kTimerMs = 16;
-constexpr int kPanelWidth = 330;
+constexpr int kPanelWidth = 430;
 constexpr int kMargin = 10;
+constexpr int kEditorGridPixels = 150;
 
 enum ControlId {
     IdPlay = 1001,
@@ -53,6 +56,14 @@ enum ControlId {
     IdMoversProduceCheck,
     IdFoodBlocksCheck,
     IdUseGlobalMutationCheck,
+    IdEditorMouth = 1401,
+    IdEditorProducer,
+    IdEditorMover,
+    IdEditorKiller,
+    IdEditorArmor,
+    IdEditorEye,
+    IdEditorReset,
+    IdDropEditor,
 };
 
 COLORREF colorRef(std::uint32_t rgb) {
@@ -72,6 +83,66 @@ std::wstring fixedDouble(double value, int precision = 2) {
 }
 
 } // namespace
+
+class GdiRenderSurface : public RenderSurface {
+public:
+    GdiRenderSurface(HDC hdc, HBRUSH eyeSlitBrush) : hdc_(hdc), eyeSlitBrush_(eyeSlitBrush) {}
+
+    ~GdiRenderSurface() override {
+        for (auto& entry : brushes_) {
+            DeleteObject(entry.second);
+        }
+    }
+
+    void fillRect(const Rect& rect, std::uint32_t rgb) override {
+        HBRUSH brush = brushFor(rgb);
+        RECT nativeRect{
+            static_cast<LONG>(rect.left),
+            static_cast<LONG>(rect.top),
+            static_cast<LONG>(rect.right),
+            static_cast<LONG>(rect.bottom)};
+        FillRect(hdc_, &nativeRect, brush);
+    }
+
+    void drawEyeSlit(const Rect& cellRect, Direction direction, std::uint32_t) override {
+        int width = cellRect.width();
+        int height = cellRect.height();
+        int thin = std::max(1, width / 4);
+        int longSide = std::max(1, (height * 3) / 4);
+        RECT slit{
+            static_cast<LONG>(cellRect.left),
+            static_cast<LONG>(cellRect.top),
+            static_cast<LONG>(cellRect.right),
+            static_cast<LONG>(cellRect.bottom)};
+        if (direction == Direction::Up || direction == Direction::Down) {
+            slit.left = cellRect.left + (width / 2) - (thin / 2);
+            slit.right = slit.left + thin;
+            slit.top = cellRect.top + (height / 2) - (longSide / 2);
+            slit.bottom = slit.top + longSide;
+        } else {
+            slit.top = cellRect.top + (height / 2) - (thin / 2);
+            slit.bottom = slit.top + thin;
+            slit.left = cellRect.left + (width / 2) - (longSide / 2);
+            slit.right = slit.left + longSide;
+        }
+        FillRect(hdc_, &slit, eyeSlitBrush_);
+    }
+
+private:
+    HBRUSH brushFor(std::uint32_t rgb) {
+        auto found = brushes_.find(rgb);
+        if (found != brushes_.end()) {
+            return found->second;
+        }
+        HBRUSH brush = CreateSolidBrush(colorRef(rgb));
+        brushes_[rgb] = brush;
+        return brush;
+    }
+
+    HDC hdc_ = nullptr;
+    HBRUSH eyeSlitBrush_ = nullptr;
+    std::unordered_map<std::uint32_t, HBRUSH> brushes_;
+};
 
 class Win32GuiApp {
 public:
@@ -183,9 +254,15 @@ private:
             onScroll(reinterpret_cast<HWND>(lParam));
             return 0;
         case WM_LBUTTONDOWN:
+            if (onEditorPointer(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), false)) {
+                return 0;
+            }
             onPointer(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), false, true);
             return 0;
         case WM_RBUTTONDOWN:
+            if (onEditorPointer(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), true)) {
+                return 0;
+            }
             onPointer(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), true, true);
             return 0;
         case WM_MBUTTONDOWN:
@@ -258,6 +335,15 @@ private:
         foodBlocksCheck_ = checkbox(L"Food blocks reproduction", IdFoodBlocksCheck, true);
         useGlobalMutationCheck_ = checkbox(L"Use global mutation", IdUseGlobalMutationCheck, false);
 
+        editorMouthTool_ = radio(L"Mouth", IdEditorMouth);
+        editorProducerTool_ = radio(L"Producer", IdEditorProducer);
+        editorMoverTool_ = radio(L"Mover", IdEditorMover);
+        editorKillerTool_ = radio(L"Killer", IdEditorKiller);
+        editorArmorTool_ = radio(L"Armor", IdEditorArmor);
+        editorEyeTool_ = radio(L"Eye", IdEditorEye);
+        editorResetButton_ = button(L"Reset Editor", IdEditorReset);
+        dropEditorButton_ = button(L"Drop", IdDropEditor);
+
         titleLabel_ = label(L"The Life Engine");
         speedLabel_ = label(L"Speed: 60");
         brushLabel_ = label(L"Brush: 2");
@@ -270,8 +356,11 @@ private:
         mutationLabel_ = label(L"Avg mutation: 0");
         largestLabel_ = label(L"Largest: 0");
         topSpeciesLabel_ = label(L"Top species: none");
+        editorLabel_ = label(L"Organism Editor");
+        editorHintLabel_ = label(L"Left: add/rotate eye  Right: remove");
 
         CheckRadioButton(hwnd_, IdFoodTool, IdInspectTool, IdFoodTool);
+        CheckRadioButton(hwnd_, IdEditorMouth, IdEditorEye, IdEditorMouth);
     }
 
     HWND button(const wchar_t* text, int id) {
@@ -369,6 +458,8 @@ private:
         move(randomWallsButton_, x + 202, y, 108, row);
         y += row + 12;
 
+        y = layoutEditorControls(x, y, w);
+
         move(gridLabel_, x, y, w, 20);
         y += 22;
         moveLabelAndEdit(L"Cell size", cellSizeEdit_, x, y, w);
@@ -413,6 +504,30 @@ private:
         move(largestLabel_, x, y, w, 20);
         y += 22;
         move(topSpeciesLabel_, x, y, w, 40);
+    }
+
+    int layoutEditorControls(int x, int y, int w) {
+        move(editorLabel_, x, y, w, 20);
+        y += 22;
+        editorRect_ = {
+            static_cast<LONG>(x),
+            static_cast<LONG>(y),
+            static_cast<LONG>(x + kEditorGridPixels),
+            static_cast<LONG>(y + kEditorGridPixels)};
+
+        int paletteX = x + kEditorGridPixels + 12;
+        int paletteW = w - kEditorGridPixels - 12;
+        move(editorMouthTool_, paletteX, y, paletteW, 22);
+        move(editorProducerTool_, paletteX, y + 24, paletteW, 22);
+        move(editorMoverTool_, paletteX, y + 48, paletteW, 22);
+        move(editorKillerTool_, paletteX, y + 72, paletteW, 22);
+        move(editorArmorTool_, paletteX, y + 96, paletteW, 22);
+        move(editorEyeTool_, paletteX, y + 120, paletteW, 22);
+        move(editorResetButton_, paletteX, y + 146, paletteW, 24);
+        move(dropEditorButton_, paletteX, y + 174, paletteW, 24);
+        y += 205;
+        move(editorHintLabel_, x, y, w, 20);
+        return y + 30;
     }
 
     void moveLabelAndEdit(const wchar_t* labelText, HWND editControl, int x, int y, int width) {
@@ -512,6 +627,35 @@ private:
         case IdInspectTool:
             model_.setTool(ToolMode::Inspect);
             break;
+        case IdEditorMouth:
+            selectedEditorState_ = CellState::Mouth;
+            break;
+        case IdEditorProducer:
+            selectedEditorState_ = CellState::Producer;
+            break;
+        case IdEditorMover:
+            selectedEditorState_ = CellState::Mover;
+            break;
+        case IdEditorKiller:
+            selectedEditorState_ = CellState::Killer;
+            break;
+        case IdEditorArmor:
+            selectedEditorState_ = CellState::Armor;
+            break;
+        case IdEditorEye:
+            selectedEditorState_ = CellState::Eye;
+            break;
+        case IdEditorReset:
+            model_.editor().setDefaultOrganism();
+            InvalidateRect(hwnd_, &editorRect_, FALSE);
+            break;
+        case IdDropEditor: {
+            auto [col, row] = model_.world().gridMap.center();
+            model_.dropEditorOrganismAt(col, row);
+            updateStats();
+            InvalidateRect(hwnd_, &canvasRect_, FALSE);
+            break;
+        }
         case IdRender:
             model_.toggleRenderEnabled();
             setText(renderButton_, model_.settings().renderEnabled ? L"Render On" : L"Render Off");
@@ -555,6 +699,28 @@ private:
         model_.applyToolAt(col, row, secondary);
         updateStats();
         InvalidateRect(hwnd_, &canvasRect_, FALSE);
+    }
+
+    bool onEditorPointer(int x, int y, bool secondary) {
+        if (!pointInRect(editorRect_, x, y)) {
+            return false;
+        }
+        int cellSize = std::max(1, kEditorGridPixels / model_.editor().world().gridMap.cols);
+        int col = (x - editorRect_.left) / cellSize;
+        int row = (y - editorRect_.top) / cellSize;
+        GridCell* cell = model_.editor().world().gridMap.cellAt(col, row);
+        if (cell == nullptr) {
+            return true;
+        }
+        if (secondary) {
+            model_.editor().removeCellAtGrid(col, row);
+        } else if (cell->state == CellState::Eye) {
+            model_.editor().rotateEyeAtGrid(col, row);
+        } else {
+            model_.editor().addCellAtGrid(col, row, selectedEditorState_);
+        }
+        InvalidateRect(hwnd_, &editorRect_, FALSE);
+        return true;
     }
 
     std::pair<int, int> screenToGrid(int x, int y) const {
@@ -650,6 +816,10 @@ private:
         return x >= canvasRect_.left && x < canvasRect_.right && y >= canvasRect_.top && y < canvasRect_.bottom;
     }
 
+    bool pointInRect(const RECT& rect, int x, int y) const {
+        return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+    }
+
     int canvasWidth() const {
         return std::max(1, static_cast<int>(canvasRect_.right - canvasRect_.left));
     }
@@ -716,6 +886,7 @@ private:
         PAINTSTRUCT ps{};
         HDC hdc = BeginPaint(hwnd_, &ps);
         FillRect(hdc, &panelRect_, panelBrush_);
+        paintEditor(hdc);
         paintCanvasBuffered(hdc);
         EndPaint(hwnd_, &ps);
     }
@@ -746,58 +917,36 @@ private:
     }
 
     void paintGrid(HDC hdc) {
-        const WorldEnvironment& world = model_.world();
-        int size = static_cast<int>(std::round(scaledCellSize()));
-        for (int col = 0; col < world.gridMap.cols; ++col) {
-            ScreenPoint point = viewport_.gridToScreen(col, 0, model_.settings().cellSize);
-            int x = static_cast<int>(std::round(canvasRect_.left + point.x));
-            if (x >= canvasRect_.right) {
-                break;
-            }
-            if (x + size < canvasRect_.left) {
-                continue;
-            }
-            for (int row = 0; row < world.gridMap.rows; ++row) {
-                ScreenPoint rowPoint = viewport_.gridToScreen(col, row, model_.settings().cellSize);
-                int y = static_cast<int>(std::round(canvasRect_.top + rowPoint.y));
-                if (y >= canvasRect_.bottom) {
-                    break;
-                }
-                if (y + size < canvasRect_.top) {
-                    continue;
-                }
-                const GridCell* cell = world.gridMap.cellAt(col, row);
-                RECT rect{
-                    static_cast<LONG>(x),
-                    static_cast<LONG>(y),
-                    static_cast<LONG>(std::min(x + size, static_cast<int>(canvasRect_.right))),
-                    static_cast<LONG>(std::min(y + size, static_cast<int>(canvasRect_.bottom)))};
-                FillRect(hdc, &rect, cellBrushes_[stateIndex(cell->state)]);
-                if (cell->state == CellState::Eye && cell->cellOwner != nullptr && size > 2) {
-                    paintEyeSlit(hdc, rect, cell->cellOwner->absoluteDirection());
-                }
-            }
-        }
+        GdiRenderSurface surface(hdc, eyeSlitBrush_);
+        GridRenderOptions options{
+            &model_.settings().palette,
+            &viewport_,
+            model_.settings().cellSize,
+            {static_cast<int>(canvasRect_.left), static_cast<int>(canvasRect_.top), static_cast<int>(canvasRect_.right), static_cast<int>(canvasRect_.bottom)},
+            true};
+        renderGrid(model_.world(), surface, options);
     }
 
-    void paintEyeSlit(HDC hdc, const RECT& cellRect, Direction direction) {
-        int width = cellRect.right - cellRect.left;
-        int height = cellRect.bottom - cellRect.top;
-        int thin = std::max(1, width / 4);
-        int longSide = std::max(1, (height * 3) / 4);
-        RECT slit = cellRect;
-        if (direction == Direction::Up || direction == Direction::Down) {
-            slit.left = cellRect.left + (width / 2) - (thin / 2);
-            slit.right = slit.left + thin;
-            slit.top = cellRect.top + (height / 2) - (longSide / 2);
-            slit.bottom = slit.top + longSide;
-        } else {
-            slit.top = cellRect.top + (height / 2) - (thin / 2);
-            slit.bottom = slit.top + thin;
-            slit.left = cellRect.left + (width / 2) - (longSide / 2);
-            slit.right = slit.left + longSide;
-        }
-        FillRect(hdc, &slit, eyeSlitBrush_);
+    void paintEditor(HDC hdc) {
+        const WorldEnvironment& editorWorld = model_.editor().world();
+        int cellSize = std::max(1, kEditorGridPixels / editorWorld.gridMap.cols);
+        HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(40, 50, 65));
+        HGDIOBJ oldPen = SelectObject(hdc, borderPen);
+        HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        Rectangle(hdc, editorRect_.left - 1, editorRect_.top - 1, editorRect_.right + 1, editorRect_.bottom + 1);
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+        DeleteObject(borderPen);
+
+        Viewport editorViewport;
+        GdiRenderSurface surface(hdc, eyeSlitBrush_);
+        GridRenderOptions options{
+            &model_.settings().palette,
+            &editorViewport,
+            cellSize,
+            {static_cast<int>(editorRect_.left), static_cast<int>(editorRect_.top), static_cast<int>(editorRect_.right), static_cast<int>(editorRect_.bottom)},
+            true};
+        renderGrid(editorWorld, surface, options);
     }
 
     void createBrushes() {
@@ -824,11 +973,13 @@ private:
     HFONT font_ = nullptr;
     RECT canvasRect_{};
     RECT panelRect_{};
+    RECT editorRect_{};
     bool mouseDown_ = false;
     bool panning_ = false;
     int lastPanX_ = 0;
     int lastPanY_ = 0;
     Viewport viewport_;
+    CellState selectedEditorState_ = CellState::Mouth;
     std::chrono::steady_clock::time_point lastTick_;
 
     std::array<HBRUSH, CellStateCount> cellBrushes_{};
@@ -862,6 +1013,14 @@ private:
     HWND moversProduceCheck_ = nullptr;
     HWND foodBlocksCheck_ = nullptr;
     HWND useGlobalMutationCheck_ = nullptr;
+    HWND editorMouthTool_ = nullptr;
+    HWND editorProducerTool_ = nullptr;
+    HWND editorMoverTool_ = nullptr;
+    HWND editorKillerTool_ = nullptr;
+    HWND editorArmorTool_ = nullptr;
+    HWND editorEyeTool_ = nullptr;
+    HWND editorResetButton_ = nullptr;
+    HWND dropEditorButton_ = nullptr;
     HWND titleLabel_ = nullptr;
     HWND speedLabel_ = nullptr;
     HWND brushLabel_ = nullptr;
@@ -880,6 +1039,8 @@ private:
     HWND mutationLabel_ = nullptr;
     HWND largestLabel_ = nullptr;
     HWND topSpeciesLabel_ = nullptr;
+    HWND editorLabel_ = nullptr;
+    HWND editorHintLabel_ = nullptr;
 };
 
 int runNativeGui(int showCommand) {

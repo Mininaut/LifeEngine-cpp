@@ -337,6 +337,17 @@ void SimulationGuiModel::applyToolAt(int col, int row, bool secondary) {
     }
 }
 
+bool SimulationGuiModel::dropEditorOrganismAt(int col, int row) {
+    auto organism = std::make_unique<Organism>(col, row, &worldDocument_.world(), &editor_.organism());
+    if (!organism->isClear(col, row, organism->rotation)) {
+        return false;
+    }
+    organism->species.reset();
+    Organism& dropped = worldDocument_.world().addOrganism(std::move(organism));
+    worldDocument_.world().fossilRecord.addSpecies(dropped);
+    return true;
+}
+
 void SimulationGuiModel::applyRulesFromSettings() {
     // Reserved for future UI state that needs validation before touching the core.
 }

@@ -9,7 +9,7 @@ add_library(lifeengine_core src/core.cpp)
 target_include_directories(lifeengine_core PUBLIC include)
 target_compile_options(lifeengine_core PRIVATE -Wall -Wextra -pedantic)
 
-add_library(lifeengine_gui_model src/gui/application.cpp)
+add_library(lifeengine_gui_model src/gui/application.cpp src/gui/renderer.cpp)
 target_link_libraries(lifeengine_gui_model PUBLIC lifeengine_core)
 target_include_directories(lifeengine_gui_model PUBLIC include)
 target_compile_options(lifeengine_gui_model PRIVATE -Wall -Wextra -pedantic)

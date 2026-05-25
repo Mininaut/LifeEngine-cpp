@@ -1,4 +1,5 @@
 #include "lifeengine/gui/application.hpp"
+#include "lifeengine/gui/renderer.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -14,6 +15,20 @@ void check(bool condition, const std::string& message) {
         std::cerr << "FAIL: " << message << '\n';
     }
 }
+
+class CountingSurface : public lifeengine::gui::RenderSurface {
+public:
+    void fillRect(const lifeengine::gui::Rect&, std::uint32_t) override {
+        ++fills;
+    }
+
+    void drawEyeSlit(const lifeengine::gui::Rect&, lifeengine::Direction, std::uint32_t) override {
+        ++eyeSlits;
+    }
+
+    int fills = 0;
+    int eyeSlits = 0;
+};
 
 void testFoodBrush() {
     lifeengine::gui::SimulationGuiModel model(20, 20, 5, 1);
@@ -118,6 +133,37 @@ void testEditorEyeRotationAndCenterProtection() {
     check(!removedCenter, "editor protects center cell");
 }
 
+void testDropEditorOrganismIntoWorld() {
+    lifeengine::gui::SimulationGuiModel model(30, 30, 5, 7);
+    model.clearWorld();
+    auto [centerCol, centerRow] = model.world().gridMap.center();
+    auto [editorCenterCol, editorCenterRow] = model.editor().world().gridMap.center();
+    model.editor().addCellAtGrid(editorCenterCol + 1, editorCenterRow, lifeengine::CellState::Producer);
+
+    bool dropped = model.dropEditorOrganismAt(centerCol, centerRow);
+
+    check(dropped, "drop editor organism succeeds in empty world");
+    check(model.world().organismCount() == 1, "drop editor organism adds world organism");
+    check(model.world().organisms[0]->anatomy.cells().size() == 2, "drop editor organism copies editor anatomy");
+    check(model.world().fossilRecord.numExtantSpecies() == 1, "drop editor organism creates world species");
+}
+
+void testRenderGridUsesSurfaceAbstraction() {
+    lifeengine::gui::SimulationGuiModel model(10, 10, 5, 8);
+    lifeengine::gui::Viewport viewport;
+    CountingSurface surface;
+    lifeengine::gui::GridRenderOptions options{
+        &model.settings().palette,
+        &viewport,
+        model.settings().cellSize,
+        {0, 0, 50, 50},
+        true};
+
+    lifeengine::gui::renderGrid(model.world(), surface, options);
+
+    check(surface.fills == 100, "renderer fills visible grid cells");
+}
+
 } // namespace
 
 int main() {
@@ -129,6 +175,8 @@ int main() {
     testViewportTransforms();
     testEditorWorldIsSeparateFromSimulationWorld();
     testEditorEyeRotationAndCenterProtection();
+    testDropEditorOrganismIntoWorld();
+    testRenderGridUsesSurfaceAbstraction();
 
     if (failures != 0) {
         std::cerr << failures << " GUI model test(s) failed\n";

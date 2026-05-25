@@ -29,5 +29,11 @@ ctest --preset mingw-ninja
 The C++ API lives in `include/lifeengine/core.hpp`, with implementation in
 `src/core.cpp`. The CLI in `src/main.cpp` runs a headless simulation and prints
 basic stats. The native GUI is split into a backend-neutral model in
-`include/lifeengine/gui/application.hpp` / `src/gui/application.cpp` and a
-replaceable Win32/GDI backend in `src/gui/win32_app.cpp`.
+`include/lifeengine/gui/application.hpp` / `src/gui/application.cpp`, a shared
+grid renderer in `include/lifeengine/gui/renderer.hpp` / `src/gui/renderer.cpp`,
+and a replaceable Win32/GDI backend in `src/gui/win32_app.cpp`.
+
+The Win32 GUI includes a separate 15x15 organism editor: choose a cell type,
+left-click the editor grid to add or replace cells, left-click an eye to rotate
+it, right-click to remove cells, and use `Drop` to place the edited organism in
+the simulation.
