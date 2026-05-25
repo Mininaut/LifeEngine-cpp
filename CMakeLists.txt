@@ -17,7 +17,7 @@ target_compile_options(lifeengine_gui_model PRIVATE -Wall -Wextra -pedantic)
 add_executable(lifeengine src/main.cpp)
 target_link_libraries(lifeengine PRIVATE lifeengine_core)
 
-add_executable(lifeengine_gui src/gui/main.cpp src/gui/win32_app.cpp)
+add_executable(lifeengine_gui WIN32 src/gui/main.cpp src/gui/win32_app.cpp)
 target_link_libraries(lifeengine_gui PRIVATE lifeengine_gui_model)
 if(WIN32)
     target_link_libraries(lifeengine_gui PRIVATE comctl32 gdi32 user32)

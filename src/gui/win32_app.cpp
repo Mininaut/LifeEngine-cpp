@@ -29,6 +29,9 @@ constexpr int kPanelWidth = 430;
 constexpr int kMargin = 10;
 constexpr int kEditorGridPixels = 150;
 constexpr int kSpeedSliderMax = 2000;
+constexpr int kPanPaintIntervalMs = 16;
+constexpr int kRenderOffPaintIntervalMs = 250;
+constexpr int kMetricsIntervalMs = 1000;
 
 enum ControlId {
     IdPlay = 1001,
@@ -148,6 +151,8 @@ class Win32GuiApp {
 public:
     Win32GuiApp() : model_(160, 100, 5, 1) {
         lastTick_ = std::chrono::steady_clock::now();
+        lastMetricsTick_ = lastTick_;
+        lastCanvasPaintRequest_ = lastTick_;
     }
 
     ~Win32GuiApp() {
@@ -517,7 +522,8 @@ private:
         y += 22;
         move(topSpeciesLabel_, x, y, w, 40);
         y += 50;
-        maxPanelScroll_ = std::max(0, y - rectHeight(panelRect_) + kMargin);
+        int contentBottom = y + panelScroll_;
+        maxPanelScroll_ = std::max(0, contentBottom - rectHeight(panelRect_) + kMargin);
         int previousScroll = panelScroll_;
         panelScroll_ = std::clamp(panelScroll_, 0, maxPanelScroll_);
         syncPanelScrollbar();
@@ -596,9 +602,12 @@ private:
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTick_);
         lastTick_ = now;
         model_.advance(elapsed);
+        updateCanvasMetrics(now);
         updateStats();
         if (model_.settings().renderEnabled) {
-            InvalidateRect(hwnd_, &canvasRect_, FALSE);
+            requestCanvasPaint(now, 0);
+        } else {
+            requestCanvasPaint(now, kRenderOffPaintIntervalMs);
         }
     }
 
@@ -824,7 +833,7 @@ private:
         viewport_.panBy(x - lastPanX_, y - lastPanY_);
         lastPanX_ = x;
         lastPanY_ = y;
-        InvalidateRect(hwnd_, &canvasRect_, FALSE);
+        requestCanvasPaint(std::chrono::steady_clock::now(), kPanPaintIntervalMs);
     }
 
     void onMouseWheel(int screenX, int screenY, int delta) {
@@ -839,7 +848,7 @@ private:
         }
         double factor = delta > 0 ? 1.2 : (1.0 / 1.2);
         viewport_.zoomAt(point.x - canvasRect_.left, point.y - canvasRect_.top, factor);
-        InvalidateRect(hwnd_, &canvasRect_, FALSE);
+        requestCanvasPaint(std::chrono::steady_clock::now(), 0);
     }
 
     void resetView() {
@@ -954,6 +963,30 @@ private:
         updateStats();
     }
 
+    void requestCanvasPaint(std::chrono::steady_clock::time_point now, int minIntervalMs) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastCanvasPaintRequest_);
+        if (minIntervalMs > 0 && elapsed.count() < minIntervalMs) {
+            return;
+        }
+        lastCanvasPaintRequest_ = now;
+        InvalidateRect(hwnd_, &canvasRect_, FALSE);
+    }
+
+    void updateCanvasMetrics(std::chrono::steady_clock::time_point now) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastMetricsTick_);
+        if (elapsed.count() < kMetricsIntervalMs) {
+            return;
+        }
+        int currentTicks = model_.world().totalTicks;
+        int tickDelta = currentTicks >= ticksAtLastMetrics_ ? currentTicks - ticksAtLastMetrics_ : currentTicks;
+        double seconds = static_cast<double>(elapsed.count()) / 1000.0;
+        measuredFps_ = seconds > 0.0 ? static_cast<double>(framesSinceMetrics_) / seconds : 0.0;
+        measuredStepsPerSecond_ = seconds > 0.0 ? static_cast<double>(tickDelta) / seconds : 0.0;
+        framesSinceMetrics_ = 0;
+        ticksAtLastMetrics_ = currentTicks;
+        lastMetricsTick_ = now;
+    }
+
     void updateStats() {
         StatsSnapshot stats = model_.stats();
         setText(tickLabel_, L"Ticks: " + std::to_wstring(stats.ticks));
@@ -967,10 +1000,20 @@ private:
     void paint() {
         PAINTSTRUCT ps{};
         HDC hdc = BeginPaint(hwnd_, &ps);
-        FillRect(hdc, &panelRect_, panelBrush_);
-        paintEditor(hdc);
-        paintCanvasBuffered(hdc);
+        if (rectsIntersect(ps.rcPaint, panelRect_)) {
+            FillRect(hdc, &panelRect_, panelBrush_);
+        }
+        if (rectsIntersect(ps.rcPaint, editorRect_)) {
+            paintEditor(hdc);
+        }
+        if (rectsIntersect(ps.rcPaint, canvasRect_)) {
+            paintCanvasBuffered(hdc);
+        }
         EndPaint(hwnd_, &ps);
+    }
+
+    bool rectsIntersect(const RECT& a, const RECT& b) const {
+        return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
     }
 
     void paintCanvasBuffered(HDC targetDc) {
@@ -991,11 +1034,28 @@ private:
             DrawTextW(memoryDc, L"Rendering disabled", -1, &canvasRect_, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
         SetViewportOrgEx(memoryDc, 0, 0, nullptr);
+        paintCanvasOverlay(memoryDc);
         BitBlt(targetDc, canvasRect_.left, canvasRect_.top, width, height, memoryDc, 0, 0, SRCCOPY);
+        ++framesSinceMetrics_;
 
         SelectObject(memoryDc, oldBitmap);
         DeleteObject(bitmap);
         DeleteDC(memoryDc);
+    }
+
+    void paintCanvasOverlay(HDC hdc) {
+        RECT overlay{
+            kMargin,
+            kMargin,
+            std::max(kMargin + 1, std::min(canvasWidth() - kMargin, 360)),
+            kMargin + 24,
+        };
+        std::wstring text = L"FPS " + fixedDouble(measuredFps_, 0) +
+                            L"   SPS " + fixedDouble(measuredStepsPerSecond_, 0) +
+                            L"   Target " + speedText();
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(224, 232, 240));
+        DrawTextW(hdc, text.c_str(), -1, &overlay, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
     void paintGrid(HDC hdc) {
@@ -1009,7 +1069,7 @@ private:
             {static_cast<int>(canvasRect_.left), static_cast<int>(canvasRect_.top), static_cast<int>(canvasRect_.right), static_cast<int>(canvasRect_.bottom)},
             true,
             false,
-            1};
+            0};
         renderGrid(model_.world(), surface, options);
         drawWorldOutline(hdc);
     }
@@ -1112,6 +1172,12 @@ private:
     Viewport viewport_;
     CellState selectedEditorState_ = CellState::Mouth;
     std::chrono::steady_clock::time_point lastTick_;
+    std::chrono::steady_clock::time_point lastMetricsTick_;
+    std::chrono::steady_clock::time_point lastCanvasPaintRequest_;
+    int framesSinceMetrics_ = 0;
+    int ticksAtLastMetrics_ = 0;
+    double measuredFps_ = 0.0;
+    double measuredStepsPerSecond_ = 0.0;
 
     std::array<HBRUSH, CellStateCount> cellBrushes_{};
     HBRUSH eyeSlitBrush_ = nullptr;

@@ -30,7 +30,7 @@ struct GridRenderOptions {
     Rect target;
     bool drawEyes = true;
     bool paintEmpty = false;
-    int cellOverlap = 1;
+    int cellOverlap = 0;
 };
 
 void renderGrid(const WorldEnvironment& world, RenderSurface& surface, const GridRenderOptions& options);

@@ -16,7 +16,7 @@ Invoke-Native g++ -std=c++17 -Wall -Wextra -pedantic -O2 -pipe -Iinclude src/cor
 Invoke-Native .\lifeengine_gui_model_tests.exe
 
 Invoke-Native g++ -std=c++17 -Wall -Wextra -pedantic -O2 -pipe -Iinclude src/core.cpp src/main.cpp -o lifeengine.exe
-Invoke-Native g++ -std=c++17 -Wall -Wextra -pedantic -O2 -pipe -Iinclude src/core.cpp src/gui/application.cpp src/gui/renderer.cpp src/gui/main.cpp src/gui/win32_app.cpp -o lifeengine_gui.exe -lcomctl32 -lgdi32 -luser32
+Invoke-Native g++ -std=c++17 -Wall -Wextra -pedantic -O2 -pipe -mwindows -Iinclude src/core.cpp src/gui/application.cpp src/gui/renderer.cpp src/gui/main.cpp src/gui/win32_app.cpp -o lifeengine_gui.exe -lcomctl32 -lgdi32 -luser32
 }
 finally {
     Pop-Location
