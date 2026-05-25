@@ -12,6 +12,7 @@ Build and test with MinGW64 GCC directly:
 cd cpp
 .\build.ps1
 .\lifeengine.exe 1000
+.\lifeengine_gui.exe
 ```
 
 Or build through CMake + Ninja while still using MinGW64 `g++`:
@@ -22,8 +23,11 @@ cmake --preset mingw-ninja
 cmake --build --preset mingw-ninja
 ctest --preset mingw-ninja
 .\build\lifeengine.exe 1000
+.\build\lifeengine_gui.exe
 ```
 
 The C++ API lives in `include/lifeengine/core.hpp`, with implementation in
 `src/core.cpp`. The CLI in `src/main.cpp` runs a headless simulation and prints
-basic stats.
+basic stats. The native GUI is split into a backend-neutral model in
+`include/lifeengine/gui/application.hpp` / `src/gui/application.cpp` and a
+replaceable Win32/GDI backend in `src/gui/win32_app.cpp`.
