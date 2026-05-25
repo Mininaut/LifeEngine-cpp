@@ -13,11 +13,14 @@
 
 #include <array>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cwchar>
+#include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 
 namespace lifeengine::gui {
@@ -212,6 +215,7 @@ public:
     }
 
     ~Win32GuiApp() {
+        stopSimulationThread();
         for (HBRUSH brush : cellBrushes_) {
             if (brush != nullptr) {
                 DeleteObject(brush);
@@ -280,12 +284,16 @@ public:
         layoutControls();
         refreshControlsFromModel();
         SetTimer(hwnd_, kTimerId, kTimerMs, nullptr);
+        startSimulationThread();
 
         ShowWindow(hwnd_, showCommand);
         UpdateWindow(hwnd_);
 
         MSG msg{};
         while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+            if (handleGlobalKeyMessage(msg)) {
+                continue;
+            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -386,6 +394,7 @@ private:
             paint();
             return 0;
         case WM_DESTROY:
+            stopSimulationThread();
             KillTimer(hwnd_, kTimerId);
             PostQuitMessage(0);
             return 0;
@@ -457,19 +466,19 @@ private:
     }
 
     HWND button(const wchar_t* text, int id) {
-        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
+        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_OWNERDRAW, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
         setFont(control);
         return control;
     }
 
     HWND radio(const wchar_t* text, int id) {
-        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
+        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_RADIOBUTTON | BS_OWNERDRAW, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
         setFont(control);
         return control;
     }
 
     HWND checkbox(const wchar_t* text, int id, bool checked) {
-        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
+        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_CHECKBOX | BS_OWNERDRAW, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
         SendMessageW(control, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
         setFont(control);
         return control;
@@ -535,8 +544,9 @@ private:
         if (isCheckboxId(id)) {
             drawCheckControl(item->hDC, item->rcItem, text, checkedState, pressed, focused);
         } else {
-            bool accent = checkedState || id == IdPlay || id == IdApplyGrid || id == IdApplyRules || id == IdDropEditor;
-            drawPillButton(item->hDC, item->rcItem, text, checkedState, pressed, focused, accent);
+            bool selected = checkedState || isActiveToolButton(id) || isActiveEditorToolButton(id);
+            bool accent = selected || id == IdPlay || id == IdApplyGrid || id == IdApplyRules || id == IdDropEditor;
+            drawPillButton(item->hDC, item->rcItem, text, selected, pressed, focused, accent);
         }
         return true;
     }
@@ -572,10 +582,10 @@ private:
     void drawCheckControl(HDC hdc, RECT rect, const wchar_t* text, bool checkedState, bool pressed, bool focused) {
         FillRect(hdc, &rect, panelBrush_);
         RECT box{rect.left + 2, rect.top + 5, rect.left + 18, rect.top + 21};
-        COLORREF fill = checkedState ? RGB(44, 112, 174) : RGB(33, 39, 48);
-        COLORREF border = focused ? RGB(122, 182, 235) : RGB(79, 91, 107);
+        COLORREF fill = checkedState ? RGB(64, 156, 92) : RGB(33, 39, 48);
+        COLORREF border = checkedState ? RGB(132, 232, 158) : (focused ? RGB(122, 182, 235) : RGB(79, 91, 107));
         if (pressed) {
-            fill = RGB(28, 34, 42);
+            fill = checkedState ? RGB(48, 126, 75) : RGB(28, 34, 42);
         }
 
         HBRUSH brush = CreateSolidBrush(fill);
@@ -616,6 +626,24 @@ private:
     bool isEditorToolId(int id) const {
         return id == IdEditorMouth || id == IdEditorProducer || id == IdEditorMover ||
                id == IdEditorKiller || id == IdEditorArmor || id == IdEditorEye;
+    }
+
+    bool isActiveToolButton(int id) const {
+        std::lock_guard<std::recursive_mutex> lock(modelMutex_);
+        ToolMode tool = model_.settings().tool;
+        return (id == IdFoodTool && tool == ToolMode::Food) ||
+               (id == IdWallTool && tool == ToolMode::Wall) ||
+               (id == IdKillTool && tool == ToolMode::Kill) ||
+               (id == IdInspectTool && tool == ToolMode::Inspect);
+    }
+
+    bool isActiveEditorToolButton(int id) const {
+        return (id == IdEditorMouth && selectedEditorState_ == CellState::Mouth) ||
+               (id == IdEditorProducer && selectedEditorState_ == CellState::Producer) ||
+               (id == IdEditorMover && selectedEditorState_ == CellState::Mover) ||
+               (id == IdEditorKiller && selectedEditorState_ == CellState::Killer) ||
+               (id == IdEditorArmor && selectedEditorState_ == CellState::Armor) ||
+               (id == IdEditorEye && selectedEditorState_ == CellState::Eye);
     }
 
     void invalidateControl(HWND control) {
@@ -827,14 +855,60 @@ private:
         }
     }
 
+    bool handleGlobalKeyMessage(const MSG& msg) {
+        if (msg.message != WM_KEYDOWN || msg.wParam != VK_SPACE) {
+            return false;
+        }
+        HWND focus = GetFocus();
+        wchar_t className[32]{};
+        if (focus != nullptr) {
+            GetClassNameW(focus, className, 32);
+            if (std::wstring(className) == L"Edit") {
+                return false;
+            }
+        }
+        onCommand(IdPlay);
+        return true;
+    }
+
+    void startSimulationThread() {
+        simulationThreadRunning_ = true;
+        simulationThread_ = std::thread([this]() { simulationLoop(); });
+    }
+
+    void stopSimulationThread() {
+        bool wasRunning = simulationThreadRunning_.exchange(false);
+        if (simulationThread_.joinable()) {
+            simulationThread_.join();
+        }
+        (void)wasRunning;
+    }
+
+    void simulationLoop() {
+        auto last = std::chrono::steady_clock::now();
+        while (simulationThreadRunning_) {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last);
+            last = now;
+            if (elapsed.count() > 0) {
+                std::lock_guard<std::recursive_mutex> lock(modelMutex_);
+                model_.advance(elapsed);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
     void onTimer() {
         auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTick_);
         lastTick_ = now;
-        model_.advance(elapsed);
-        updateCanvasMetrics(now);
-        requestStats(now, kPanelStatsIntervalMs);
-        if (model_.settings().renderEnabled) {
+        bool renderEnabled = false;
+        {
+            std::lock_guard<std::recursive_mutex> lock(modelMutex_);
+            updateCanvasMetrics(now);
+            requestStats(now, kPanelStatsIntervalMs);
+            renderEnabled = model_.settings().renderEnabled;
+        }
+        if (renderEnabled) {
             requestCanvasPaint(now, 0);
         } else {
             requestCanvasPaint(now, kRenderOffPaintIntervalMs);
@@ -842,6 +916,7 @@ private:
     }
 
     void onScroll(HWND source) {
+        std::lock_guard<std::recursive_mutex> lock(modelMutex_);
         if (source == speedSlider_) {
             int position = static_cast<int>(SendMessageW(speedSlider_, TBM_GETPOS, 0, 0));
             model_.setTargetFps(position);
@@ -912,6 +987,7 @@ private:
     }
 
     void onCommand(int id) {
+        std::lock_guard<std::recursive_mutex> lock(modelMutex_);
         switch (id) {
         case IdPlay:
             model_.toggleRunning();
@@ -1010,6 +1086,7 @@ private:
             resetToolDragCache();
             return;
         }
+        std::lock_guard<std::recursive_mutex> lock(modelMutex_);
         if (model_.settings().tool == ToolMode::Inspect) {
             if (begin && !secondary) {
                 beginPan(x, y);
@@ -1058,6 +1135,7 @@ private:
         if (!pointInRect(editorRect_, x, y)) {
             return false;
         }
+        std::lock_guard<std::recursive_mutex> lock(modelMutex_);
         int cellSize = std::max(1, kEditorGridPixels / model_.editor().world().gridMap.cols);
         int col = (x - editorRect_.left) / cellSize;
         int row = (y - editorRect_.top) / cellSize;
@@ -1077,11 +1155,13 @@ private:
     }
 
     std::pair<int, int> screenToGrid(int x, int y) const {
+        std::lock_guard<std::recursive_mutex> lock(modelMutex_);
         GridPoint point = viewport_.screenToGrid(x - canvasRect_.left, y - canvasRect_.top, model_.settings().cellSize);
         return {point.col, point.row};
     }
 
     double scaledCellSize() const {
+        std::lock_guard<std::recursive_mutex> lock(modelMutex_);
         return viewport_.scaledCellSize(model_.settings().cellSize);
     }
 
@@ -1113,7 +1193,12 @@ private:
             return;
         }
         double factor = delta > 0 ? 1.2 : (1.0 / 1.2);
-        viewport_.zoomAt(point.x - canvasRect_.left, point.y - canvasRect_.top, factor);
+        int cellSize = 1;
+        {
+            std::lock_guard<std::recursive_mutex> lock(modelMutex_);
+            cellSize = model_.settings().cellSize;
+        }
+        viewport_.zoomAt(point.x - canvasRect_.left, point.y - canvasRect_.top, factor, cellSize);
         requestCanvasPaint(std::chrono::steady_clock::now(), 0);
     }
 
@@ -1182,6 +1267,7 @@ private:
     }
 
     void applyRules() {
+        std::lock_guard<std::recursive_mutex> lock(modelMutex_);
         WorldEnvironment& world = model_.world();
         world.hyper.foodProdProb = readDouble(foodProbEdit_, world.hyper.foodProdProb);
         world.hyper.lifespanMultiplier = readInt(lifespanEdit_, world.hyper.lifespanMultiplier);
@@ -1216,10 +1302,12 @@ private:
     }
 
     std::wstring speedText() const {
+        std::lock_guard<std::recursive_mutex> lock(modelMutex_);
         return model_.settings().targetFps >= 5000 ? L"MAX" : std::to_wstring(model_.settings().targetFps);
     }
 
     void refreshControlsFromModel() {
+        std::lock_guard<std::recursive_mutex> lock(modelMutex_);
         setText(speedLabel_, L"Speed: " + speedText());
         setText(brushLabel_, L"Brush: " + std::to_wstring(model_.settings().brushSize));
         updateStats();
@@ -1259,6 +1347,7 @@ private:
     }
 
     void updateStats() {
+        std::lock_guard<std::recursive_mutex> lock(modelMutex_);
         StatsSnapshot stats = model_.stats();
         setText(tickLabel_, L"Ticks: " + std::to_wstring(stats.ticks));
         setText(populationLabel_, L"Population: " + std::to_wstring(stats.organisms));
@@ -1295,13 +1384,16 @@ private:
         }
 
         fillPixels({0, 0, width, height}, 0x12161B);
-        if (model_.settings().renderEnabled) {
-            paintGrid();
-        } else {
-            RECT localCanvas{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-            SetBkMode(canvasMemoryDc_, TRANSPARENT);
-            SetTextColor(canvasMemoryDc_, RGB(230, 230, 230));
-            DrawTextW(canvasMemoryDc_, L"Rendering disabled", -1, &localCanvas, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        {
+            std::lock_guard<std::recursive_mutex> lock(modelMutex_);
+            if (model_.settings().renderEnabled) {
+                paintGrid();
+            } else {
+                RECT localCanvas{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+                SetBkMode(canvasMemoryDc_, TRANSPARENT);
+                SetTextColor(canvasMemoryDc_, RGB(230, 230, 230));
+                DrawTextW(canvasMemoryDc_, L"Rendering disabled", -1, &localCanvas, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
         }
         paintCanvasOverlay(canvasMemoryDc_);
         BitBlt(targetDc, canvasRect_.left, canvasRect_.top, width, height, canvasMemoryDc_, 0, 0, SRCCOPY);
@@ -1441,6 +1533,7 @@ private:
     }
 
     void paintEditor(HDC hdc) {
+        std::lock_guard<std::recursive_mutex> lock(modelMutex_);
         const WorldEnvironment& editorWorld = model_.editor().world();
         int cellSize = std::max(1, kEditorGridPixels / editorWorld.gridMap.cols);
         HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(40, 50, 65));
@@ -1489,6 +1582,9 @@ private:
     SimulationGuiModel model_;
     HWND hwnd_ = nullptr;
     HFONT font_ = nullptr;
+    mutable std::recursive_mutex modelMutex_;
+    std::atomic<bool> simulationThreadRunning_{false};
+    std::thread simulationThread_;
     RECT canvasRect_{};
     RECT panelRect_{};
     RECT editorRect_{};

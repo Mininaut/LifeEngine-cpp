@@ -355,6 +355,11 @@ public:
     WorldConfig config;
     Random rng;
     FossilRecord fossilRecord;
+
+private:
+    void compactOrganismsFromIndexes(std::vector<std::size_t>& organismIndexes);
+
+    std::vector<std::size_t> removalScratch_;
 };
 
 std::unique_ptr<Organism> generateRandomOrganism(WorldEnvironment& env, int organismLayers = 4, double cellSpawnChance = 0.75);

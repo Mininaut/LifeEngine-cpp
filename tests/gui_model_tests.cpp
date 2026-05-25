@@ -117,6 +117,19 @@ void testViewportTransforms() {
     check(viewport.scale() == 1.0 && viewport.offsetX() == 0.0 && viewport.offsetY() == 0.0, "viewport reset");
 }
 
+void testViewportZoomStopsAtOnePixelCells() {
+    lifeengine::gui::Viewport viewport;
+    viewport.zoomAt(25.0, 30.0, 1.5, 1);
+    viewport.zoomAt(25.0, 30.0, 1.0 / 1.5, 1);
+    double offsetX = viewport.offsetX();
+    double offsetY = viewport.offsetY();
+
+    viewport.zoomAt(25.0, 30.0, 0.5, 1);
+
+    check(viewport.scale() == 1.0, "cell size 1 zoom-out clamps at one screen pixel");
+    check(viewport.offsetX() == offsetX && viewport.offsetY() == offsetY, "clamped zoom does not pan the viewport");
+}
+
 void testEditorWorldIsSeparateFromSimulationWorld() {
     lifeengine::gui::SimulationGuiModel model(20, 20, 5, 7);
     auto [worldCenterCol, worldCenterRow] = model.world().gridMap.center();
@@ -188,7 +201,7 @@ void testRenderGridUsesSurfaceAbstraction() {
 void testRenderGridAvoidsFractionalZoomOverlap() {
     lifeengine::gui::SimulationGuiModel model(10, 10, 5, 10);
     lifeengine::gui::Viewport viewport;
-    viewport.zoomAt(0.0, 0.0, 0.3);
+    viewport.zoomAt(0.0, 0.0, 0.3, model.settings().cellSize);
     CountingSurface surface;
     lifeengine::gui::GridRenderOptions options{
         &model.settings().palette,
@@ -223,6 +236,7 @@ int main() {
     testAdvanceOnlyWhenRunning();
     testMaxSpeedTarget();
     testViewportTransforms();
+    testViewportZoomStopsAtOnePixelCells();
     testEditorWorldIsSeparateFromSimulationWorld();
     testEditorEyeRotationAndCenterProtection();
     testDropEditorOrganismIntoWorld();

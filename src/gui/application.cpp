@@ -47,13 +47,19 @@ void Viewport::panBy(double dx, double dy) {
     offsetY_ += dy;
 }
 
-void Viewport::zoomAt(double localX, double localY, double factor) {
-    double oldScale = scale_;
-    scale_ = std::clamp(scale_ * factor, 0.125, 32.0);
-    double worldX = (localX - offsetX_) / oldScale;
-    double worldY = (localY - offsetY_) / oldScale;
-    offsetX_ = localX - (worldX * scale_);
-    offsetY_ = localY - (worldY * scale_);
+void Viewport::zoomAt(double localX, double localY, double factor, int cellSize) {
+    double oldCellPixels = scaledCellSize(cellSize);
+    double minScale = 1.0 / static_cast<double>(std::max(1, cellSize));
+    double nextScale = std::clamp(scale_ * factor, minScale, 32.0);
+    if (nextScale == scale_) {
+        return;
+    }
+    double worldX = (localX - offsetX_) / oldCellPixels;
+    double worldY = (localY - offsetY_) / oldCellPixels;
+    scale_ = nextScale;
+    double nextCellPixels = scaledCellSize(cellSize);
+    offsetX_ = localX - (worldX * nextCellPixels);
+    offsetY_ = localY - (worldY * nextCellPixels);
 }
 
 GridPoint Viewport::screenToGrid(double localX, double localY, int cellSize) const {
@@ -73,7 +79,7 @@ ScreenPoint Viewport::gridToScreen(int col, int row, int cellSize) const {
 }
 
 double Viewport::scaledCellSize(int cellSize) const {
-    return std::max(1.0, cellSize * scale_);
+    return std::max(1.0, static_cast<double>(cellSize) * scale_);
 }
 
 double Viewport::scale() const {

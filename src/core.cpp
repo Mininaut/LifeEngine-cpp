@@ -242,6 +242,7 @@ std::pair<int, int> GridMap::xyToColRow(int x, int y) const {
 }
 
 Brain::Brain(Organism* owner) : owner_(owner) {
+    observations_.reserve(4);
     decisions_.fill(Decision::Neutral);
     decisions_[stateIndex(CellState::Food)] = Decision::Chase;
     decisions_[stateIndex(CellState::Killer)] = Decision::Retreat;
@@ -521,9 +522,11 @@ void BodyCell::performFunction() {
             return;
         }
         if (env.rng.chancePercent(env.hyper.foodProdProb)) {
+            int realC = realCol();
+            int realR = realRow();
             const auto& neighbors = env.hyper.growableNeighbors;
             auto loc = neighbors[env.rng.intExclusive(static_cast<int>(neighbors.size()))];
-            GridCell* cell = env.gridMap.cellAt(realCol() + loc.first, realRow() + loc.second);
+            GridCell* cell = env.gridMap.cellAt(realC + loc.first, realR + loc.second);
             if (cell != nullptr && cell->state == CellState::Empty) {
                 env.changeCell(cell->col, cell->row, CellState::Food, nullptr);
             }
@@ -858,7 +861,6 @@ void Organism::reproduce() {
         child->c = newC;
         child->r = newR;
         Organism& childRef = env->addOrganism(std::move(child));
-        childRef.updateGrid();
         if (mutated) {
             env->fossilRecord.addSpecies(childRef, species);
         } else if (childRef.species != nullptr) {
@@ -1077,16 +1079,18 @@ WorldEnvironment::WorldEnvironment(int cellSize, int cols, int rows, std::uint32
 }
 
 void WorldEnvironment::update() {
-    std::vector<std::size_t> toRemove;
     std::size_t startSize = organisms.size();
-    toRemove.reserve(startSize / 8);
+    removalScratch_.clear();
+    if (removalScratch_.capacity() < startSize / 8) {
+        removalScratch_.reserve(startSize / 8);
+    }
     for (std::size_t i = 0; i < startSize; ++i) {
         Organism& organism = *organisms[i];
         if (!organism.living || !organism.update()) {
-            toRemove.push_back(i);
+            removalScratch_.push_back(i);
         }
     }
-    removeOrganisms(toRemove);
+    compactOrganismsFromIndexes(removalScratch_);
     if (hyper.foodDropProb > 0.0) {
         generateFood();
     }
@@ -1100,30 +1104,35 @@ void WorldEnvironment::removeOrganisms(const std::vector<std::size_t>& organismI
     if (organismIndexes.empty()) {
         return;
     }
-    int startPop = static_cast<int>(organisms.size());
     std::vector<std::size_t> sorted = organismIndexes;
-    std::sort(sorted.begin(), sorted.end());
-    sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+    compactOrganismsFromIndexes(sorted);
+}
 
-    std::vector<std::unique_ptr<Organism>> survivors;
-    survivors.reserve(organisms.size() - std::min(sorted.size(), organisms.size()));
-    std::size_t removeCursor = 0;
-    for (std::size_t index : sorted) {
-        if (index < organisms.size()) {
-            totalMutability -= organisms[index]->mutability;
-        }
+void WorldEnvironment::compactOrganismsFromIndexes(std::vector<std::size_t>& organismIndexes) {
+    if (organismIndexes.empty()) {
+        return;
     }
-    for (std::size_t i = 0; i < organisms.size(); ++i) {
-        while (removeCursor < sorted.size() && sorted[removeCursor] < i) {
+    int startPop = static_cast<int>(organisms.size());
+    std::sort(organismIndexes.begin(), organismIndexes.end());
+    organismIndexes.erase(std::unique(organismIndexes.begin(), organismIndexes.end()), organismIndexes.end());
+
+    std::size_t write = 0;
+    std::size_t removeCursor = 0;
+    for (std::size_t read = 0; read < organisms.size(); ++read) {
+        while (removeCursor < organismIndexes.size() && organismIndexes[removeCursor] < read) {
             ++removeCursor;
         }
-        if (removeCursor < sorted.size() && sorted[removeCursor] == i) {
+        if (removeCursor < organismIndexes.size() && organismIndexes[removeCursor] == read) {
+            totalMutability -= organisms[read]->mutability;
             ++removeCursor;
             continue;
         }
-        survivors.push_back(std::move(organisms[i]));
+        if (write != read) {
+            organisms[write] = std::move(organisms[read]);
+        }
+        ++write;
     }
-    organisms.swap(survivors);
+    organisms.resize(write);
 
     if (organisms.empty() && startPop > 0) {
         if (config.autoReset && !config.autoPause) {
@@ -1199,14 +1208,16 @@ void WorldEnvironment::clearOrganisms() {
 }
 
 void WorldEnvironment::clearDeadOrganisms() {
-    std::vector<std::size_t> toRemove;
-    toRemove.reserve(organisms.size() / 8);
+    removalScratch_.clear();
+    if (removalScratch_.capacity() < organisms.size() / 8) {
+        removalScratch_.reserve(organisms.size() / 8);
+    }
     for (std::size_t i = 0; i < organisms.size(); ++i) {
         if (!organisms[i]->living) {
-            toRemove.push_back(i);
+            removalScratch_.push_back(i);
         }
     }
-    removeOrganisms(toRemove);
+    compactOrganismsFromIndexes(removalScratch_);
 }
 
 void WorldEnvironment::generateFood() {

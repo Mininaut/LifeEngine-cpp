@@ -66,7 +66,7 @@ class Viewport {
 public:
     void reset();
     void panBy(double dx, double dy);
-    void zoomAt(double localX, double localY, double factor);
+    void zoomAt(double localX, double localY, double factor, int cellSize = 1);
     GridPoint screenToGrid(double localX, double localY, int cellSize) const;
     ScreenPoint gridToScreen(int col, int row, int cellSize) const;
     double scaledCellSize(int cellSize) const;
