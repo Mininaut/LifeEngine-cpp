@@ -77,6 +77,10 @@ COLORREF colorRef(std::uint32_t rgb) {
     return RGB((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
 }
 
+std::uint32_t dibColor(std::uint32_t rgb) {
+    return ((rgb & 0x0000ffu) << 16) | (rgb & 0x00ff00u) | ((rgb & 0xff0000u) >> 16);
+}
+
 int rectHeight(const RECT& rect) {
     return static_cast<int>(rect.bottom - rect.top);
 }
@@ -150,6 +154,54 @@ private:
     std::unordered_map<std::uint32_t, HBRUSH>& brushes_;
 };
 
+class DibRenderSurface : public RenderSurface {
+public:
+    DibRenderSurface(std::uint32_t* pixels, int width, int height)
+        : pixels_(pixels), width_(width), height_(height) {}
+
+    void fillRect(const Rect& rect, std::uint32_t rgb) override {
+        if (pixels_ == nullptr) {
+            return;
+        }
+        int left = std::clamp(rect.left, 0, width_);
+        int top = std::clamp(rect.top, 0, height_);
+        int right = std::clamp(rect.right, 0, width_);
+        int bottom = std::clamp(rect.bottom, 0, height_);
+        if (right <= left || bottom <= top) {
+            return;
+        }
+        std::uint32_t color = dibColor(rgb);
+        for (int y = top; y < bottom; ++y) {
+            std::fill(pixels_ + (y * width_) + left, pixels_ + (y * width_) + right, color);
+        }
+    }
+
+    void drawEyeSlit(const Rect& cellRect, Direction direction, std::uint32_t rgb) override {
+        int width = cellRect.width();
+        int height = cellRect.height();
+        int thin = std::max(1, width / 4);
+        int longSide = std::max(1, (height * 3) / 4);
+        Rect slit{cellRect.left, cellRect.top, cellRect.right, cellRect.bottom};
+        if (direction == Direction::Up || direction == Direction::Down) {
+            slit.left = cellRect.left + (width / 2) - (thin / 2);
+            slit.right = slit.left + thin;
+            slit.top = cellRect.top + (height / 2) - (longSide / 2);
+            slit.bottom = slit.top + longSide;
+        } else {
+            slit.top = cellRect.top + (height / 2) - (thin / 2);
+            slit.bottom = slit.top + thin;
+            slit.left = cellRect.left + (width / 2) - (longSide / 2);
+            slit.right = slit.left + longSide;
+        }
+        fillRect(slit, rgb);
+    }
+
+private:
+    std::uint32_t* pixels_ = nullptr;
+    int width_ = 0;
+    int height_ = 0;
+};
+
 class Win32GuiApp {
 public:
     Win32GuiApp() : model_(160, 100, 5, 1) {
@@ -167,6 +219,9 @@ public:
         }
         if (panelBrush_ != nullptr) {
             DeleteObject(panelBrush_);
+        }
+        if (editBrush_ != nullptr) {
+            DeleteObject(editBrush_);
         }
         if (canvasBrush_ != nullptr) {
             DeleteObject(canvasBrush_);
@@ -269,6 +324,14 @@ private:
         case WM_COMMAND:
             onCommand(LOWORD(wParam));
             return 0;
+        case WM_DRAWITEM:
+            return drawOwnerControl(reinterpret_cast<DRAWITEMSTRUCT*>(lParam)) ? TRUE : FALSE;
+        case WM_CTLCOLORSTATIC:
+            return reinterpret_cast<LRESULT>(brushStaticControl(reinterpret_cast<HDC>(wParam)));
+        case WM_CTLCOLOREDIT:
+            return reinterpret_cast<LRESULT>(brushEditControl(reinterpret_cast<HDC>(wParam)));
+        case WM_CTLCOLORBTN:
+            return reinterpret_cast<LRESULT>(panelBrush_);
         case WM_HSCROLL:
             onScroll(reinterpret_cast<HWND>(lParam));
             return 0;
@@ -394,19 +457,19 @@ private:
     }
 
     HWND button(const wchar_t* text, int id) {
-        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
+        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
         setFont(control);
         return control;
     }
 
     HWND radio(const wchar_t* text, int id) {
-        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
+        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
         setFont(control);
         return control;
     }
 
     HWND checkbox(const wchar_t* text, int id, bool checked) {
-        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
+        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
         SendMessageW(control, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
         setFont(control);
         return control;
@@ -442,6 +505,160 @@ private:
         if (text != current) {
             SetWindowTextW(control, text.c_str());
         }
+    }
+
+    HBRUSH brushStaticControl(HDC hdc) const {
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(218, 224, 232));
+        return panelBrush_;
+    }
+
+    HBRUSH brushEditControl(HDC hdc) const {
+        SetBkMode(hdc, OPAQUE);
+        SetBkColor(hdc, RGB(26, 31, 39));
+        SetTextColor(hdc, RGB(235, 240, 246));
+        return editBrush_;
+    }
+
+    bool drawOwnerControl(DRAWITEMSTRUCT* item) {
+        if (item == nullptr || item->CtlType != ODT_BUTTON) {
+            return false;
+        }
+
+        wchar_t text[128]{};
+        GetWindowTextW(item->hwndItem, text, 128);
+        bool pressed = (item->itemState & ODS_SELECTED) != 0;
+        bool focused = (item->itemState & ODS_FOCUS) != 0;
+        bool checkedState = SendMessageW(item->hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        int id = static_cast<int>(item->CtlID);
+
+        if (isCheckboxId(id)) {
+            drawCheckControl(item->hDC, item->rcItem, text, checkedState, pressed, focused);
+        } else {
+            bool accent = checkedState || id == IdPlay || id == IdApplyGrid || id == IdApplyRules || id == IdDropEditor;
+            drawPillButton(item->hDC, item->rcItem, text, checkedState, pressed, focused, accent);
+        }
+        return true;
+    }
+
+    void drawPillButton(HDC hdc, RECT rect, const wchar_t* text, bool checkedState, bool pressed, bool focused, bool accent) {
+        COLORREF fill = checkedState ? RGB(44, 112, 174) : (accent ? RGB(55, 67, 82) : RGB(38, 45, 55));
+        COLORREF border = checkedState ? RGB(91, 169, 238) : RGB(74, 86, 102);
+        COLORREF textColor = RGB(237, 242, 248);
+        if (pressed) {
+            fill = checkedState ? RGB(34, 91, 145) : RGB(30, 36, 45);
+        }
+        if (focused) {
+            border = RGB(122, 182, 235);
+        }
+
+        HBRUSH brush = CreateSolidBrush(fill);
+        HPEN pen = CreatePen(PS_SOLID, 1, border);
+        HGDIOBJ oldBrush = SelectObject(hdc, brush);
+        HGDIOBJ oldPen = SelectObject(hdc, pen);
+        RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, 8, 8);
+        SelectObject(hdc, oldPen);
+        SelectObject(hdc, oldBrush);
+        DeleteObject(pen);
+        DeleteObject(brush);
+
+        RECT textRect = rect;
+        InflateRect(&textRect, -8, 0);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, textColor);
+        DrawTextW(hdc, text, -1, &textRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+
+    void drawCheckControl(HDC hdc, RECT rect, const wchar_t* text, bool checkedState, bool pressed, bool focused) {
+        FillRect(hdc, &rect, panelBrush_);
+        RECT box{rect.left + 2, rect.top + 5, rect.left + 18, rect.top + 21};
+        COLORREF fill = checkedState ? RGB(44, 112, 174) : RGB(33, 39, 48);
+        COLORREF border = focused ? RGB(122, 182, 235) : RGB(79, 91, 107);
+        if (pressed) {
+            fill = RGB(28, 34, 42);
+        }
+
+        HBRUSH brush = CreateSolidBrush(fill);
+        HPEN pen = CreatePen(PS_SOLID, 1, border);
+        HGDIOBJ oldBrush = SelectObject(hdc, brush);
+        HGDIOBJ oldPen = SelectObject(hdc, pen);
+        RoundRect(hdc, box.left, box.top, box.right, box.bottom, 5, 5);
+        SelectObject(hdc, oldPen);
+        SelectObject(hdc, oldBrush);
+        DeleteObject(pen);
+        DeleteObject(brush);
+
+        if (checkedState) {
+            HPEN markPen = CreatePen(PS_SOLID, 2, RGB(240, 247, 255));
+            HGDIOBJ oldMark = SelectObject(hdc, markPen);
+            MoveToEx(hdc, box.left + 4, box.top + 8, nullptr);
+            LineTo(hdc, box.left + 7, box.top + 11);
+            LineTo(hdc, box.right - 3, box.top + 4);
+            SelectObject(hdc, oldMark);
+            DeleteObject(markPen);
+        }
+
+        RECT textRect{rect.left + 24, rect.top, rect.right, rect.bottom};
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(218, 224, 232));
+        DrawTextW(hdc, text, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+
+    bool isCheckboxId(int id) const {
+        return id == IdRotationCheck || id == IdInstaKillCheck || id == IdMoversProduceCheck ||
+               id == IdFoodBlocksCheck || id == IdUseGlobalMutationCheck;
+    }
+
+    bool isToolId(int id) const {
+        return id == IdFoodTool || id == IdWallTool || id == IdKillTool || id == IdInspectTool;
+    }
+
+    bool isEditorToolId(int id) const {
+        return id == IdEditorMouth || id == IdEditorProducer || id == IdEditorMover ||
+               id == IdEditorKiller || id == IdEditorArmor || id == IdEditorEye;
+    }
+
+    void invalidateControl(HWND control) {
+        if (control != nullptr) {
+            InvalidateRect(control, nullptr, TRUE);
+        }
+    }
+
+    void selectTool(ToolMode tool, int controlId) {
+        CheckRadioButton(hwnd_, IdFoodTool, IdInspectTool, controlId);
+        model_.setTool(tool);
+        invalidateToolButtons();
+    }
+
+    void selectEditorState(CellState state, int controlId) {
+        CheckRadioButton(hwnd_, IdEditorMouth, IdEditorEye, controlId);
+        selectedEditorState_ = state;
+        invalidateEditorToolButtons();
+    }
+
+    void invalidateToolButtons() {
+        invalidateControl(foodTool_);
+        invalidateControl(wallTool_);
+        invalidateControl(killTool_);
+        invalidateControl(inspectTool_);
+    }
+
+    void invalidateEditorToolButtons() {
+        invalidateControl(editorMouthTool_);
+        invalidateControl(editorProducerTool_);
+        invalidateControl(editorMoverTool_);
+        invalidateControl(editorKillerTool_);
+        invalidateControl(editorArmorTool_);
+        invalidateControl(editorEyeTool_);
+    }
+
+    void toggleOwnerCheckbox(HWND control) {
+        if (control == nullptr) {
+            return;
+        }
+        bool isChecked = SendMessageW(control, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        SendMessageW(control, BM_SETCHECK, isChecked ? BST_UNCHECKED : BST_CHECKED, 0);
+        invalidateControl(control);
     }
 
     void layoutControls() {
@@ -716,34 +933,34 @@ private:
             InvalidateRect(hwnd_, &canvasRect_, FALSE);
             break;
         case IdFoodTool:
-            model_.setTool(ToolMode::Food);
+            selectTool(ToolMode::Food, IdFoodTool);
             break;
         case IdWallTool:
-            model_.setTool(ToolMode::Wall);
+            selectTool(ToolMode::Wall, IdWallTool);
             break;
         case IdKillTool:
-            model_.setTool(ToolMode::Kill);
+            selectTool(ToolMode::Kill, IdKillTool);
             break;
         case IdInspectTool:
-            model_.setTool(ToolMode::Inspect);
+            selectTool(ToolMode::Inspect, IdInspectTool);
             break;
         case IdEditorMouth:
-            selectedEditorState_ = CellState::Mouth;
+            selectEditorState(CellState::Mouth, IdEditorMouth);
             break;
         case IdEditorProducer:
-            selectedEditorState_ = CellState::Producer;
+            selectEditorState(CellState::Producer, IdEditorProducer);
             break;
         case IdEditorMover:
-            selectedEditorState_ = CellState::Mover;
+            selectEditorState(CellState::Mover, IdEditorMover);
             break;
         case IdEditorKiller:
-            selectedEditorState_ = CellState::Killer;
+            selectEditorState(CellState::Killer, IdEditorKiller);
             break;
         case IdEditorArmor:
-            selectedEditorState_ = CellState::Armor;
+            selectEditorState(CellState::Armor, IdEditorArmor);
             break;
         case IdEditorEye:
-            selectedEditorState_ = CellState::Eye;
+            selectEditorState(CellState::Eye, IdEditorEye);
             break;
         case IdEditorReset:
             model_.editor().setDefaultOrganism();
@@ -775,6 +992,13 @@ private:
             break;
         case IdApplyRules:
             applyRules();
+            break;
+        case IdRotationCheck:
+        case IdInstaKillCheck:
+        case IdMoversProduceCheck:
+        case IdFoodBlocksCheck:
+        case IdUseGlobalMutationCheck:
+            toggleOwnerCheckbox(GetDlgItem(hwnd_, id));
             break;
         default:
             break;
@@ -916,20 +1140,16 @@ private:
             resetView();
             break;
         case 'F':
-            CheckRadioButton(hwnd_, IdFoodTool, IdInspectTool, IdFoodTool);
-            model_.setTool(ToolMode::Food);
+            selectTool(ToolMode::Food, IdFoodTool);
             break;
         case 'D':
-            CheckRadioButton(hwnd_, IdFoodTool, IdInspectTool, IdWallTool);
-            model_.setTool(ToolMode::Wall);
+            selectTool(ToolMode::Wall, IdWallTool);
             break;
         case 'G':
-            CheckRadioButton(hwnd_, IdFoodTool, IdInspectTool, IdKillTool);
-            model_.setTool(ToolMode::Kill);
+            selectTool(ToolMode::Kill, IdKillTool);
             break;
         case 'S':
-            CheckRadioButton(hwnd_, IdFoodTool, IdInspectTool, IdInspectTool);
-            model_.setTool(ToolMode::Inspect);
+            selectTool(ToolMode::Inspect, IdInspectTool);
             break;
         case 'H':
             onCommand(IdRender);
@@ -1074,17 +1294,15 @@ private:
             return;
         }
 
-        RECT localCanvas{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-        FillRect(canvasMemoryDc_, &localCanvas, canvasBrush_);
-        SetViewportOrgEx(canvasMemoryDc_, -canvasRect_.left, -canvasRect_.top, nullptr);
+        fillPixels({0, 0, width, height}, 0x12161B);
         if (model_.settings().renderEnabled) {
-            paintGrid(canvasMemoryDc_);
+            paintGrid();
         } else {
+            RECT localCanvas{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
             SetBkMode(canvasMemoryDc_, TRANSPARENT);
             SetTextColor(canvasMemoryDc_, RGB(230, 230, 230));
-            DrawTextW(canvasMemoryDc_, L"Rendering disabled", -1, &canvasRect_, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawTextW(canvasMemoryDc_, L"Rendering disabled", -1, &localCanvas, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
-        SetViewportOrgEx(canvasMemoryDc_, 0, 0, nullptr);
         paintCanvasOverlay(canvasMemoryDc_);
         BitBlt(targetDc, canvasRect_.left, canvasRect_.top, width, height, canvasMemoryDc_, 0, 0, SRCCOPY);
         ++framesSinceMetrics_;
@@ -1098,13 +1316,23 @@ private:
         destroyCanvasBuffer();
 
         canvasMemoryDc_ = CreateCompatibleDC(targetDc);
-        canvasBitmap_ = CreateCompatibleBitmap(targetDc, width, height);
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(info.bmiHeader);
+        info.bmiHeader.biWidth = width;
+        info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+
+        void* pixels = nullptr;
+        canvasBitmap_ = CreateDIBSection(targetDc, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
         if (canvasMemoryDc_ == nullptr || canvasBitmap_ == nullptr) {
             destroyCanvasBuffer();
             return false;
         }
 
         canvasOldBitmap_ = SelectObject(canvasMemoryDc_, canvasBitmap_);
+        canvasPixels_ = static_cast<std::uint32_t*>(pixels);
         canvasBufferWidth_ = width;
         canvasBufferHeight_ = height;
         return true;
@@ -1125,6 +1353,7 @@ private:
             DeleteDC(canvasMemoryDc_);
             canvasMemoryDc_ = nullptr;
         }
+        canvasPixels_ = nullptr;
         canvasBufferWidth_ = 0;
         canvasBufferHeight_ = 0;
     }
@@ -1144,34 +1373,30 @@ private:
         DrawTextW(hdc, text.c_str(), -1, &overlay, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
-    void paintGrid(HDC hdc) {
-        fillWorldField(hdc);
+    void paintGrid() {
+        fillWorldField();
 
-        GdiRenderSurface surface(hdc, eyeSlitBrush_, renderBrushes_);
+        DibRenderSurface surface(canvasPixels_, canvasBufferWidth_, canvasBufferHeight_);
         GridRenderOptions options{
             &model_.settings().palette,
             &viewport_,
             model_.settings().cellSize,
-            {static_cast<int>(canvasRect_.left), static_cast<int>(canvasRect_.top), static_cast<int>(canvasRect_.right), static_cast<int>(canvasRect_.bottom)},
+            {0, 0, canvasBufferWidth_, canvasBufferHeight_},
             true,
             false,
             0};
         renderGrid(model_.world(), surface, options);
-        drawWorldOutline(hdc);
+        drawWorldOutline(canvasMemoryDc_);
     }
 
-    void fillWorldField(HDC hdc) {
-        const RECT field = visibleWorldRect();
-        if (field.right <= field.left || field.bottom <= field.top) {
-            return;
-        }
-        FillRect(hdc, &field, fieldBrush_);
+    void fillWorldField() {
+        fillPixels(visibleWorldRect(), model_.settings().palette.empty);
     }
 
     void drawWorldOutline(HDC hdc) {
         const RECT outline = worldOutlineRect();
-        if (outline.right > canvasRect_.left && outline.left < canvasRect_.right &&
-            outline.bottom > canvasRect_.top && outline.top < canvasRect_.bottom) {
+        if (outline.right > 0 && outline.left < canvasBufferWidth_ &&
+            outline.bottom > 0 && outline.top < canvasBufferHeight_) {
             FrameRect(hdc, &outline, fieldBorderBrush_);
         }
     }
@@ -1179,10 +1404,10 @@ private:
     RECT visibleWorldRect() const {
         RECT outline = worldOutlineRect();
         return {
-            (std::max)(canvasRect_.left, outline.left),
-            (std::max)(canvasRect_.top, outline.top),
-            (std::min)(canvasRect_.right, outline.right),
-            (std::min)(canvasRect_.bottom, outline.bottom),
+            (std::max)(0L, outline.left),
+            (std::max)(0L, outline.top),
+            (std::min)(static_cast<LONG>(canvasBufferWidth_), outline.right),
+            (std::min)(static_cast<LONG>(canvasBufferHeight_), outline.bottom),
         };
     }
 
@@ -1191,11 +1416,28 @@ private:
         ScreenPoint topLeft = viewport_.gridToScreen(0, 0, model_.settings().cellSize);
         ScreenPoint bottomRight = viewport_.gridToScreen(world.gridMap.cols, world.gridMap.rows, model_.settings().cellSize);
         return {
-            static_cast<LONG>(canvasRect_.left + std::floor(topLeft.x)),
-            static_cast<LONG>(canvasRect_.top + std::floor(topLeft.y)),
-            static_cast<LONG>(canvasRect_.left + std::ceil(bottomRight.x)),
-            static_cast<LONG>(canvasRect_.top + std::ceil(bottomRight.y)),
+            static_cast<LONG>(std::floor(topLeft.x)),
+            static_cast<LONG>(std::floor(topLeft.y)),
+            static_cast<LONG>(std::ceil(bottomRight.x)),
+            static_cast<LONG>(std::ceil(bottomRight.y)),
         };
+    }
+
+    void fillPixels(const RECT& rect, std::uint32_t rgb) {
+        if (canvasPixels_ == nullptr) {
+            return;
+        }
+        int left = std::clamp(static_cast<int>(rect.left), 0, canvasBufferWidth_);
+        int top = std::clamp(static_cast<int>(rect.top), 0, canvasBufferHeight_);
+        int right = std::clamp(static_cast<int>(rect.right), 0, canvasBufferWidth_);
+        int bottom = std::clamp(static_cast<int>(rect.bottom), 0, canvasBufferHeight_);
+        if (right <= left || bottom <= top) {
+            return;
+        }
+        std::uint32_t color = dibColor(rgb);
+        for (int y = top; y < bottom; ++y) {
+            std::fill(canvasPixels_ + (y * canvasBufferWidth_) + left, canvasPixels_ + (y * canvasBufferWidth_) + right, color);
+        }
     }
 
     void paintEditor(HDC hdc) {
@@ -1237,7 +1479,8 @@ private:
             cellBrushes_[stateIndex(state)] = CreateSolidBrush(colorRef(palette.colorFor(state)));
         }
         eyeSlitBrush_ = CreateSolidBrush(colorRef(palette.eyeSlit));
-        panelBrush_ = CreateSolidBrush(RGB(225, 227, 236));
+        panelBrush_ = CreateSolidBrush(RGB(29, 34, 42));
+        editBrush_ = CreateSolidBrush(RGB(26, 31, 39));
         canvasBrush_ = CreateSolidBrush(RGB(18, 22, 27));
         fieldBrush_ = CreateSolidBrush(colorRef(palette.empty));
         fieldBorderBrush_ = CreateSolidBrush(RGB(82, 94, 110));
@@ -1275,6 +1518,7 @@ private:
     std::array<HBRUSH, CellStateCount> cellBrushes_{};
     HBRUSH eyeSlitBrush_ = nullptr;
     HBRUSH panelBrush_ = nullptr;
+    HBRUSH editBrush_ = nullptr;
     HBRUSH canvasBrush_ = nullptr;
     HBRUSH fieldBrush_ = nullptr;
     HBRUSH fieldBorderBrush_ = nullptr;
@@ -1282,6 +1526,7 @@ private:
     HDC canvasMemoryDc_ = nullptr;
     HBITMAP canvasBitmap_ = nullptr;
     HGDIOBJ canvasOldBitmap_ = nullptr;
+    std::uint32_t* canvasPixels_ = nullptr;
     int canvasBufferWidth_ = 0;
     int canvasBufferHeight_ = 0;
 
