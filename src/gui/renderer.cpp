@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace lifeengine::gui {
 
@@ -16,35 +17,45 @@ int Rect::height() const {
 void renderGrid(const WorldEnvironment& world, RenderSurface& surface, const GridRenderOptions& options) {
     const Viewport& viewport = *options.viewport;
     const Palette& palette = *options.palette;
-    double cellPixels = viewport.scaledCellSize(options.cellSize);
-    int size = std::max(1, static_cast<int>(std::ceil(cellPixels)) + std::max(0, options.cellOverlap));
+
+    std::vector<int> xBounds(static_cast<std::size_t>(world.gridMap.cols + 1));
+    std::vector<int> yBounds(static_cast<std::size_t>(world.gridMap.rows + 1));
+
+    for (int col = 0; col <= world.gridMap.cols; ++col) {
+        ScreenPoint point = viewport.gridToScreen(col, 0, options.cellSize);
+        xBounds[static_cast<std::size_t>(col)] = static_cast<int>(std::round(options.target.left + point.x));
+    }
+    for (int row = 0; row <= world.gridMap.rows; ++row) {
+        ScreenPoint point = viewport.gridToScreen(0, row, options.cellSize);
+        yBounds[static_cast<std::size_t>(row)] = static_cast<int>(std::round(options.target.top + point.y));
+    }
 
     for (int col = 0; col < world.gridMap.cols; ++col) {
-        ScreenPoint sp = viewport.gridToScreen(col, 0, options.cellSize);
-        int x = static_cast<int>(std::round(options.target.left + sp.x));
+        int x = xBounds[static_cast<std::size_t>(col)];
+        int nextX = xBounds[static_cast<std::size_t>(col + 1)] + std::max(0, options.cellOverlap);
         if (x >= options.target.right) break;
-        if (x + size < options.target.left) continue;
+        if (nextX <= options.target.left) continue;
 
         for (int row = 0; row < world.gridMap.rows; ++row) {
-            ScreenPoint rp = viewport.gridToScreen(col, row, options.cellSize);
-            int y = static_cast<int>(std::round(options.target.top + rp.y));
+            int y = yBounds[static_cast<std::size_t>(row)];
+            int nextY = yBounds[static_cast<std::size_t>(row + 1)] + std::max(0, options.cellOverlap);
             if (y >= options.target.bottom) break;
-            if (y + size < options.target.top) continue;
+            if (nextY <= options.target.top) continue;
 
             const GridCell* cell = world.gridMap.cellAt(col, row);
             if (!options.paintEmpty && cell->state == CellState::Empty) {
                 continue;
             }
             Rect cellRect{
-                x,
-                y,
-                (std::min)(x + size, options.target.right),
-                (std::min)(y + size, options.target.bottom),
+                (std::max)(x, options.target.left),
+                (std::max)(y, options.target.top),
+                (std::min)(nextX, options.target.right),
+                (std::min)(nextY, options.target.bottom),
             };
 
             surface.fillRect(cellRect, palette.colorFor(cell->state));
 
-            if (options.drawEyes && cell->state == CellState::Eye && cell->cellOwner != nullptr && size > 2) {
+            if (options.drawEyes && cell->state == CellState::Eye && cell->cellOwner != nullptr && cellRect.width() > 2 && cellRect.height() > 2) {
                 surface.drawEyeSlit(cellRect, cell->cellOwner->absoluteDirection(), palette.eyeSlit);
             }
         }

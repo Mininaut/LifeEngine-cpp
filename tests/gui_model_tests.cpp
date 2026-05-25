@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -18,8 +19,9 @@ void check(bool condition, const std::string& message) {
 
 class CountingSurface : public lifeengine::gui::RenderSurface {
 public:
-    void fillRect(const lifeengine::gui::Rect&, std::uint32_t) override {
+    void fillRect(const lifeengine::gui::Rect& rect, std::uint32_t) override {
         ++fills;
+        rects.push_back(rect);
     }
 
     void drawEyeSlit(const lifeengine::gui::Rect&, lifeengine::Direction, std::uint32_t) override {
@@ -28,6 +30,7 @@ public:
 
     int fills = 0;
     int eyeSlits = 0;
+    std::vector<lifeengine::gui::Rect> rects;
 };
 
 void testFoodBrush() {
@@ -175,11 +178,39 @@ void testRenderGridUsesSurfaceAbstraction() {
 
     CountingSurface nonEmptySurface;
     options.paintEmpty = false;
-    options.cellOverlap = 1;
+    options.cellOverlap = 0;
     lifeengine::gui::renderGrid(model.world(), nonEmptySurface, options);
 
     check(nonEmptySurface.fills > 0, "renderer paints living cells when empty cells are skipped");
     check(nonEmptySurface.fills < surface.fills, "renderer can skip empty cells for faster paints");
+}
+
+void testRenderGridAvoidsFractionalZoomOverlap() {
+    lifeengine::gui::SimulationGuiModel model(10, 10, 5, 10);
+    lifeengine::gui::Viewport viewport;
+    viewport.zoomAt(0.0, 0.0, 0.3);
+    CountingSurface surface;
+    lifeengine::gui::GridRenderOptions options{
+        &model.settings().palette,
+        &viewport,
+        model.settings().cellSize,
+        {0, 0, 20, 20},
+        true,
+        true,
+        0};
+
+    lifeengine::gui::renderGrid(model.world(), surface, options);
+
+    for (int col = 1; col < model.world().gridMap.cols; ++col) {
+        const lifeengine::gui::Rect& previous = surface.rects[(col - 1) * model.world().gridMap.rows];
+        const lifeengine::gui::Rect& current = surface.rects[col * model.world().gridMap.rows];
+        check(previous.right == current.left, "fractional zoom horizontal cells share one edge");
+    }
+    for (int row = 1; row < model.world().gridMap.rows; ++row) {
+        const lifeengine::gui::Rect& previous = surface.rects[row - 1];
+        const lifeengine::gui::Rect& current = surface.rects[row];
+        check(previous.bottom == current.top, "fractional zoom vertical cells share one edge");
+    }
 }
 
 } // namespace
@@ -196,6 +227,7 @@ int main() {
     testEditorEyeRotationAndCenterProtection();
     testDropEditorOrganismIntoWorld();
     testRenderGridUsesSurfaceAbstraction();
+    testRenderGridAvoidsFractionalZoomOverlap();
 
     if (failures != 0) {
         std::cerr << failures << " GUI model test(s) failed\n";
