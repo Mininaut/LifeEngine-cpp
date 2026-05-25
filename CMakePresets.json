@@ -1,0 +1,30 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "mingw-ninja",
+      "displayName": "MinGW64 GCC + Ninja",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "mingw-ninja",
+      "configurePreset": "mingw-ninja"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "mingw-ninja",
+      "configurePreset": "mingw-ninja",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
