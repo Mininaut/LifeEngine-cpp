@@ -146,8 +146,8 @@ bool SimulationRuntime::running() const {
 }
 
 void SimulationRuntime::setTargetFps(int fps) {
-    if (fps >= 300) {
-        targetFps_ = 1000;
+    if (fps >= 2000) {
+        targetFps_ = 5000;
     } else {
         targetFps_ = std::max(1, fps);
     }
@@ -164,7 +164,7 @@ void SimulationRuntime::advance(WorldEnvironment& world, std::chrono::millisecon
     }
 
     stepAccumulator_ += static_cast<double>(elapsed.count()) * targetFps_ / 1000.0;
-    int steps = std::min(static_cast<int>(stepAccumulator_), 250);
+    int steps = std::min(static_cast<int>(stepAccumulator_), 1000);
     stepAccumulator_ -= steps;
     for (int i = 0; i < steps; ++i) {
         stepOnce(world);

@@ -1127,7 +1127,7 @@ void WorldEnvironment::removeOrganisms(const std::vector<std::size_t>& organismI
     if (organisms.empty() && startPop > 0) {
         if (config.autoReset && !config.autoPause) {
             ++resetCount;
-            reset(false);
+            reset(true);
         }
     }
 }

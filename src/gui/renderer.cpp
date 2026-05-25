@@ -17,7 +17,7 @@ void renderGrid(const WorldEnvironment& world, RenderSurface& surface, const Gri
     const Viewport& viewport = *options.viewport;
     const Palette& palette = *options.palette;
     double cellPixels = viewport.scaledCellSize(options.cellSize);
-    int size = static_cast<int>(std::round(cellPixels));
+    int size = std::max(1, static_cast<int>(std::ceil(cellPixels)) + std::max(0, options.cellOverlap));
 
     for (int col = 0; col < world.gridMap.cols; ++col) {
         ScreenPoint sp = viewport.gridToScreen(col, 0, options.cellSize);
@@ -32,6 +32,9 @@ void renderGrid(const WorldEnvironment& world, RenderSurface& surface, const Gri
             if (y + size < options.target.top) continue;
 
             const GridCell* cell = world.gridMap.cellAt(col, row);
+            if (!options.paintEmpty && cell->state == CellState::Empty) {
+                continue;
+            }
             Rect cellRect{
                 x,
                 y,

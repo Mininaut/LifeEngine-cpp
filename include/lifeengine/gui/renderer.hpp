@@ -29,6 +29,8 @@ struct GridRenderOptions {
     int cellSize;
     Rect target;
     bool drawEyes = true;
+    bool paintEmpty = false;
+    int cellOverlap = 1;
 };
 
 void renderGrid(const WorldEnvironment& world, RenderSurface& surface, const GridRenderOptions& options);

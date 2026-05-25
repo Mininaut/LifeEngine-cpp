@@ -28,6 +28,7 @@ constexpr int kTimerMs = 16;
 constexpr int kPanelWidth = 430;
 constexpr int kMargin = 10;
 constexpr int kEditorGridPixels = 150;
+constexpr int kSpeedSliderMax = 2000;
 
 enum ControlId {
     IdPlay = 1001,
@@ -70,6 +71,10 @@ COLORREF colorRef(std::uint32_t rgb) {
     return RGB((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
 }
 
+int rectHeight(const RECT& rect) {
+    return static_cast<int>(rect.bottom - rect.top);
+}
+
 std::wstring widen(const std::string& text) {
     return std::wstring(text.begin(), text.end());
 }
@@ -86,13 +91,8 @@ std::wstring fixedDouble(double value, int precision = 2) {
 
 class GdiRenderSurface : public RenderSurface {
 public:
-    GdiRenderSurface(HDC hdc, HBRUSH eyeSlitBrush) : hdc_(hdc), eyeSlitBrush_(eyeSlitBrush) {}
-
-    ~GdiRenderSurface() override {
-        for (auto& entry : brushes_) {
-            DeleteObject(entry.second);
-        }
-    }
+    GdiRenderSurface(HDC hdc, HBRUSH eyeSlitBrush, std::unordered_map<std::uint32_t, HBRUSH>& brushes)
+        : hdc_(hdc), eyeSlitBrush_(eyeSlitBrush), brushes_(brushes) {}
 
     void fillRect(const Rect& rect, std::uint32_t rgb) override {
         HBRUSH brush = brushFor(rgb);
@@ -141,7 +141,7 @@ private:
 
     HDC hdc_ = nullptr;
     HBRUSH eyeSlitBrush_ = nullptr;
-    std::unordered_map<std::uint32_t, HBRUSH> brushes_;
+    std::unordered_map<std::uint32_t, HBRUSH>& brushes_;
 };
 
 class Win32GuiApp {
@@ -162,8 +162,17 @@ public:
         if (canvasBrush_ != nullptr) {
             DeleteObject(canvasBrush_);
         }
+        if (fieldBrush_ != nullptr) {
+            DeleteObject(fieldBrush_);
+        }
+        if (fieldBorderBrush_ != nullptr) {
+            DeleteObject(fieldBorderBrush_);
+        }
         if (eyeSlitBrush_ != nullptr) {
             DeleteObject(eyeSlitBrush_);
+        }
+        for (auto& entry : renderBrushes_) {
+            DeleteObject(entry.second);
         }
     }
 
@@ -187,7 +196,7 @@ public:
             0,
             wc.lpszClassName,
             L"The Life Engine - C++ Native",
-            WS_OVERLAPPEDWINDOW,
+            WS_OVERLAPPEDWINDOW | WS_VSCROLL,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             1240,
@@ -252,6 +261,9 @@ private:
             return 0;
         case WM_HSCROLL:
             onScroll(reinterpret_cast<HWND>(lParam));
+            return 0;
+        case WM_VSCROLL:
+            onPanelScroll(LOWORD(wParam));
             return 0;
         case WM_LBUTTONDOWN:
             if (onEditorPointer(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), false)) {
@@ -319,7 +331,7 @@ private:
         killTool_ = radio(L"Kill", IdKillTool);
         inspectTool_ = radio(L"Pan", IdInspectTool);
 
-        speedSlider_ = trackbar(IdSpeedSlider, 1, 300, 60);
+        speedSlider_ = trackbar(IdSpeedSlider, 1, kSpeedSliderMax, 60);
         brushSlider_ = trackbar(IdBrushSlider, 0, 15, 2);
 
         cellSizeEdit_ = edit(L"5", IdCellSizeEdit);
@@ -423,7 +435,7 @@ private:
         panelRect_.left = canvasRect_.right;
 
         int x = panelRect_.left + kMargin;
-        int y = kMargin;
+        int y = kMargin - panelScroll_;
         int w = kPanelWidth - (kMargin * 2);
         int row = 28;
         int gap = 7;
@@ -504,6 +516,14 @@ private:
         move(largestLabel_, x, y, w, 20);
         y += 22;
         move(topSpeciesLabel_, x, y, w, 40);
+        y += 50;
+        maxPanelScroll_ = std::max(0, y - rectHeight(panelRect_) + kMargin);
+        int previousScroll = panelScroll_;
+        panelScroll_ = std::clamp(panelScroll_, 0, maxPanelScroll_);
+        syncPanelScrollbar();
+        if (panelScroll_ != previousScroll) {
+            layoutControls();
+        }
     }
 
     int layoutEditorControls(int x, int y, int w) {
@@ -592,6 +612,64 @@ private:
             model_.setBrushSize(position);
             setText(brushLabel_, L"Brush: " + std::to_wstring(position));
         }
+    }
+
+    void onPanelScroll(int request) {
+        int next = panelScroll_;
+        const int page = std::max(1, rectHeight(panelRect_) - (kMargin * 2));
+        switch (request) {
+        case SB_LINEUP:
+            next -= 40;
+            break;
+        case SB_LINEDOWN:
+            next += 40;
+            break;
+        case SB_PAGEUP:
+            next -= page;
+            break;
+        case SB_PAGEDOWN:
+            next += page;
+            break;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION: {
+            SCROLLINFO info{};
+            info.cbSize = sizeof(info);
+            info.fMask = SIF_TRACKPOS;
+            GetScrollInfo(hwnd_, SB_VERT, &info);
+            next = info.nTrackPos;
+            break;
+        }
+        case SB_TOP:
+            next = 0;
+            break;
+        case SB_BOTTOM:
+            next = maxPanelScroll_;
+            break;
+        default:
+            return;
+        }
+        scrollPanelTo(next);
+    }
+
+    void scrollPanelTo(int next) {
+        int clamped = std::clamp(next, 0, maxPanelScroll_);
+        if (clamped == panelScroll_) {
+            return;
+        }
+        panelScroll_ = clamped;
+        layoutControls();
+        InvalidateRect(hwnd_, &panelRect_, TRUE);
+    }
+
+    void syncPanelScrollbar() {
+        SCROLLINFO info{};
+        info.cbSize = sizeof(info);
+        info.fMask = SIF_RANGE | SIF_PAGE | SIF_POS | SIF_DISABLENOSCROLL;
+        info.nMin = 0;
+        info.nMax = maxPanelScroll_ + std::max(1, rectHeight(panelRect_)) - 1;
+        info.nPage = static_cast<UINT>(std::max(1, rectHeight(panelRect_)));
+        info.nPos = panelScroll_;
+        SetScrollInfo(hwnd_, SB_VERT, &info, TRUE);
     }
 
     void onCommand(int id) {
@@ -752,6 +830,10 @@ private:
     void onMouseWheel(int screenX, int screenY, int delta) {
         POINT point{screenX, screenY};
         ScreenToClient(hwnd_, &point);
+        if (pointInRect(panelRect_, point.x, point.y)) {
+            scrollPanelTo(panelScroll_ - (delta / WHEEL_DELTA) * 80);
+            return;
+        }
         if (!pointInCanvas(point.x, point.y)) {
             return;
         }
@@ -863,7 +945,7 @@ private:
     }
 
     std::wstring speedText() const {
-        return model_.settings().targetFps >= 1000 ? L"MAX" : std::to_wstring(model_.settings().targetFps);
+        return model_.settings().targetFps >= 5000 ? L"MAX" : std::to_wstring(model_.settings().targetFps);
     }
 
     void refreshControlsFromModel() {
@@ -917,14 +999,57 @@ private:
     }
 
     void paintGrid(HDC hdc) {
-        GdiRenderSurface surface(hdc, eyeSlitBrush_);
+        fillWorldField(hdc);
+
+        GdiRenderSurface surface(hdc, eyeSlitBrush_, renderBrushes_);
         GridRenderOptions options{
             &model_.settings().palette,
             &viewport_,
             model_.settings().cellSize,
             {static_cast<int>(canvasRect_.left), static_cast<int>(canvasRect_.top), static_cast<int>(canvasRect_.right), static_cast<int>(canvasRect_.bottom)},
-            true};
+            true,
+            false,
+            1};
         renderGrid(model_.world(), surface, options);
+        drawWorldOutline(hdc);
+    }
+
+    void fillWorldField(HDC hdc) {
+        const RECT field = visibleWorldRect();
+        if (field.right <= field.left || field.bottom <= field.top) {
+            return;
+        }
+        FillRect(hdc, &field, fieldBrush_);
+    }
+
+    void drawWorldOutline(HDC hdc) {
+        const RECT outline = worldOutlineRect();
+        if (outline.right > canvasRect_.left && outline.left < canvasRect_.right &&
+            outline.bottom > canvasRect_.top && outline.top < canvasRect_.bottom) {
+            FrameRect(hdc, &outline, fieldBorderBrush_);
+        }
+    }
+
+    RECT visibleWorldRect() const {
+        RECT outline = worldOutlineRect();
+        return {
+            (std::max)(canvasRect_.left, outline.left),
+            (std::max)(canvasRect_.top, outline.top),
+            (std::min)(canvasRect_.right, outline.right),
+            (std::min)(canvasRect_.bottom, outline.bottom),
+        };
+    }
+
+    RECT worldOutlineRect() const {
+        const WorldEnvironment& world = model_.world();
+        ScreenPoint topLeft = viewport_.gridToScreen(0, 0, model_.settings().cellSize);
+        ScreenPoint bottomRight = viewport_.gridToScreen(world.gridMap.cols, world.gridMap.rows, model_.settings().cellSize);
+        return {
+            static_cast<LONG>(canvasRect_.left + std::floor(topLeft.x)),
+            static_cast<LONG>(canvasRect_.top + std::floor(topLeft.y)),
+            static_cast<LONG>(canvasRect_.left + std::ceil(bottomRight.x)),
+            static_cast<LONG>(canvasRect_.top + std::ceil(bottomRight.y)),
+        };
     }
 
     void paintEditor(HDC hdc) {
@@ -939,13 +1064,15 @@ private:
         DeleteObject(borderPen);
 
         Viewport editorViewport;
-        GdiRenderSurface surface(hdc, eyeSlitBrush_);
+        GdiRenderSurface surface(hdc, eyeSlitBrush_, renderBrushes_);
         GridRenderOptions options{
             &model_.settings().palette,
             &editorViewport,
             cellSize,
             {static_cast<int>(editorRect_.left), static_cast<int>(editorRect_.top), static_cast<int>(editorRect_.right), static_cast<int>(editorRect_.bottom)},
-            true};
+            true,
+            true,
+            0};
         renderGrid(editorWorld, surface, options);
     }
 
@@ -965,7 +1092,9 @@ private:
         }
         eyeSlitBrush_ = CreateSolidBrush(colorRef(palette.eyeSlit));
         panelBrush_ = CreateSolidBrush(RGB(225, 227, 236));
-        canvasBrush_ = CreateSolidBrush(colorRef(palette.empty));
+        canvasBrush_ = CreateSolidBrush(RGB(18, 22, 27));
+        fieldBrush_ = CreateSolidBrush(colorRef(palette.empty));
+        fieldBorderBrush_ = CreateSolidBrush(RGB(82, 94, 110));
     }
 
     SimulationGuiModel model_;
@@ -976,6 +1105,8 @@ private:
     RECT editorRect_{};
     bool mouseDown_ = false;
     bool panning_ = false;
+    int panelScroll_ = 0;
+    int maxPanelScroll_ = 0;
     int lastPanX_ = 0;
     int lastPanY_ = 0;
     Viewport viewport_;
@@ -986,6 +1117,9 @@ private:
     HBRUSH eyeSlitBrush_ = nullptr;
     HBRUSH panelBrush_ = nullptr;
     HBRUSH canvasBrush_ = nullptr;
+    HBRUSH fieldBrush_ = nullptr;
+    HBRUSH fieldBorderBrush_ = nullptr;
+    std::unordered_map<std::uint32_t, HBRUSH> renderBrushes_;
 
     HWND playButton_ = nullptr;
     HWND stepButton_ = nullptr;

@@ -191,6 +191,17 @@ void testOriginOfLife() {
     check(env.fossilRecord.numExtantSpecies() == 1, "origin creates species");
 }
 
+void testAutoResetReseedsOrigin() {
+    lifeengine::WorldEnvironment env(1, 11, 11, 10);
+    env.originOfLife();
+    env.organisms[0]->die();
+    env.clearDeadOrganisms();
+
+    check(env.resetCount == 1, "auto reset count increments");
+    check(env.organismCount() == 1, "auto reset reseeds origin organism");
+    check(env.fossilRecord.numExtantSpecies() == 1, "auto reset recreates species");
+}
+
 } // namespace
 
 int main() {
@@ -207,6 +218,7 @@ int main() {
     testSeededRandomOrganismDeterminism();
     testFossilRecordCap();
     testOriginOfLife();
+    testAutoResetReseedsOrigin();
 
     if (failures != 0) {
         std::cerr << failures << " test(s) failed\n";

@@ -52,8 +52,8 @@ void testWallBrushKillsBlockingOrganism() {
 
     model.applyToolAt(centerCol, centerRow);
 
-    check(model.world().gridMap.cellAt(centerCol, centerRow)->state == lifeengine::CellState::Wall, "wall brush places wall");
-    check(model.world().organismCount() == 0, "wall brush removes killed organism");
+    check(model.world().resetCount == 1, "wall brush death triggers auto reset");
+    check(model.world().organismCount() == 1, "wall brush auto reset reseeds organism");
 }
 
 void testKillBrush() {
@@ -65,7 +65,8 @@ void testKillBrush() {
 
     model.applyToolAt(centerCol, centerRow);
 
-    check(model.world().organismCount() == 0, "kill brush removes organism");
+    check(model.world().resetCount == 1, "kill brush death triggers auto reset");
+    check(model.world().organismCount() == 1, "kill brush auto reset reseeds organism");
 }
 
 void testResizeGridToCanvas() {
@@ -90,6 +91,13 @@ void testAdvanceOnlyWhenRunning() {
     check(model.world().totalTicks == 10, "running advance ticks by fps");
 }
 
+void testMaxSpeedTarget() {
+    lifeengine::gui::SimulationGuiModel model(20, 20, 5, 6);
+    model.setTargetFps(2000);
+
+    check(model.settings().targetFps == 5000, "max speed slider maps to high step rate");
+}
+
 void testViewportTransforms() {
     lifeengine::gui::Viewport viewport;
     viewport.panBy(10.0, 20.0);
@@ -107,7 +115,7 @@ void testViewportTransforms() {
 }
 
 void testEditorWorldIsSeparateFromSimulationWorld() {
-    lifeengine::gui::SimulationGuiModel model(20, 20, 5, 6);
+    lifeengine::gui::SimulationGuiModel model(20, 20, 5, 7);
     auto [worldCenterCol, worldCenterRow] = model.world().gridMap.center();
     auto [editorCenterCol, editorCenterRow] = model.editor().world().gridMap.center();
 
@@ -134,7 +142,7 @@ void testEditorEyeRotationAndCenterProtection() {
 }
 
 void testDropEditorOrganismIntoWorld() {
-    lifeengine::gui::SimulationGuiModel model(30, 30, 5, 7);
+    lifeengine::gui::SimulationGuiModel model(30, 30, 5, 8);
     model.clearWorld();
     auto [centerCol, centerRow] = model.world().gridMap.center();
     auto [editorCenterCol, editorCenterRow] = model.editor().world().gridMap.center();
@@ -149,7 +157,7 @@ void testDropEditorOrganismIntoWorld() {
 }
 
 void testRenderGridUsesSurfaceAbstraction() {
-    lifeengine::gui::SimulationGuiModel model(10, 10, 5, 8);
+    lifeengine::gui::SimulationGuiModel model(10, 10, 5, 9);
     lifeengine::gui::Viewport viewport;
     CountingSurface surface;
     lifeengine::gui::GridRenderOptions options{
@@ -157,11 +165,21 @@ void testRenderGridUsesSurfaceAbstraction() {
         &viewport,
         model.settings().cellSize,
         {0, 0, 50, 50},
-        true};
+        true,
+        true,
+        0};
 
     lifeengine::gui::renderGrid(model.world(), surface, options);
 
     check(surface.fills == 100, "renderer fills visible grid cells");
+
+    CountingSurface nonEmptySurface;
+    options.paintEmpty = false;
+    options.cellOverlap = 1;
+    lifeengine::gui::renderGrid(model.world(), nonEmptySurface, options);
+
+    check(nonEmptySurface.fills > 0, "renderer paints living cells when empty cells are skipped");
+    check(nonEmptySurface.fills < surface.fills, "renderer can skip empty cells for faster paints");
 }
 
 } // namespace
@@ -172,6 +190,7 @@ int main() {
     testKillBrush();
     testResizeGridToCanvas();
     testAdvanceOnlyWhenRunning();
+    testMaxSpeedTarget();
     testViewportTransforms();
     testEditorWorldIsSeparateFromSimulationWorld();
     testEditorEyeRotationAndCenterProtection();
