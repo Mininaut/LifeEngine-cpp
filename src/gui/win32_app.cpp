@@ -30,6 +30,9 @@ constexpr int kMargin = 10;
 constexpr int kEditorGridPixels = 150;
 constexpr int kSpeedSliderMax = 2000;
 constexpr int kPanPaintIntervalMs = 16;
+constexpr int kToolPaintIntervalMs = 16;
+constexpr int kToolStatsIntervalMs = 100;
+constexpr int kPanelStatsIntervalMs = 250;
 constexpr int kRenderOffPaintIntervalMs = 250;
 constexpr int kMetricsIntervalMs = 1000;
 
@@ -153,6 +156,7 @@ public:
         lastTick_ = std::chrono::steady_clock::now();
         lastMetricsTick_ = lastTick_;
         lastCanvasPaintRequest_ = lastTick_;
+        lastStatsUpdate_ = lastTick_;
     }
 
     ~Win32GuiApp() {
@@ -179,6 +183,7 @@ public:
         for (auto& entry : renderBrushes_) {
             DeleteObject(entry.second);
         }
+        destroyCanvasBuffer();
     }
 
     int run(int showCommand) {
@@ -301,11 +306,19 @@ private:
             return 0;
         case WM_LBUTTONUP:
         case WM_RBUTTONUP:
-        case WM_MBUTTONUP:
+        case WM_MBUTTONUP: {
+            bool finishedToolDrag = mouseDown_ && !panning_;
             mouseDown_ = false;
             panning_ = false;
+            resetToolDragCache();
             ReleaseCapture();
+            if (finishedToolDrag) {
+                auto now = std::chrono::steady_clock::now();
+                updateStats();
+                requestCanvasPaint(now, 0);
+            }
             return 0;
+        }
         case WM_PAINT:
             paint();
             return 0;
@@ -603,7 +616,7 @@ private:
         lastTick_ = now;
         model_.advance(elapsed);
         updateCanvasMetrics(now);
-        updateStats();
+        requestStats(now, kPanelStatsIntervalMs);
         if (model_.settings().renderEnabled) {
             requestCanvasPaint(now, 0);
         } else {
@@ -770,6 +783,7 @@ private:
 
     void onPointer(int x, int y, bool secondary, bool begin) {
         if (!pointInCanvas(x, y)) {
+            resetToolDragCache();
             return;
         }
         if (model_.settings().tool == ToolMode::Inspect) {
@@ -780,12 +794,40 @@ private:
         }
         if (begin) {
             mouseDown_ = true;
+            resetToolDragCache();
             SetCapture(hwnd_);
         }
         auto [col, row] = screenToGrid(x, y);
+        if (isDuplicateToolDrag(col, row, secondary)) {
+            return;
+        }
+        rememberToolDrag(col, row, secondary);
         model_.applyToolAt(col, row, secondary);
-        updateStats();
-        InvalidateRect(hwnd_, &canvasRect_, FALSE);
+        auto now = std::chrono::steady_clock::now();
+        requestStats(now, begin ? 0 : kToolStatsIntervalMs);
+        requestCanvasPaint(now, begin ? 0 : kToolPaintIntervalMs);
+    }
+
+    bool isDuplicateToolDrag(int col, int row, bool secondary) const {
+        return hasLastToolPoint_ &&
+               col == lastToolCol_ &&
+               row == lastToolRow_ &&
+               secondary == lastToolSecondary_ &&
+               model_.settings().tool == lastToolMode_ &&
+               model_.settings().brushSize == lastToolBrushSize_;
+    }
+
+    void rememberToolDrag(int col, int row, bool secondary) {
+        hasLastToolPoint_ = true;
+        lastToolCol_ = col;
+        lastToolRow_ = row;
+        lastToolSecondary_ = secondary;
+        lastToolMode_ = model_.settings().tool;
+        lastToolBrushSize_ = model_.settings().brushSize;
+    }
+
+    void resetToolDragCache() {
+        hasLastToolPoint_ = false;
     }
 
     bool onEditorPointer(int x, int y, bool secondary) {
@@ -972,6 +1014,15 @@ private:
         InvalidateRect(hwnd_, &canvasRect_, FALSE);
     }
 
+    void requestStats(std::chrono::steady_clock::time_point now, int minIntervalMs) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastStatsUpdate_);
+        if (minIntervalMs > 0 && elapsed.count() < minIntervalMs) {
+            return;
+        }
+        lastStatsUpdate_ = now;
+        updateStats();
+    }
+
     void updateCanvasMetrics(std::chrono::steady_clock::time_point now) {
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastMetricsTick_);
         if (elapsed.count() < kMetricsIntervalMs) {
@@ -1019,28 +1070,63 @@ private:
     void paintCanvasBuffered(HDC targetDc) {
         int width = canvasWidth();
         int height = canvasHeight();
-        HDC memoryDc = CreateCompatibleDC(targetDc);
-        HBITMAP bitmap = CreateCompatibleBitmap(targetDc, width, height);
-        HGDIOBJ oldBitmap = SelectObject(memoryDc, bitmap);
+        if (!ensureCanvasBuffer(targetDc, width, height)) {
+            return;
+        }
 
         RECT localCanvas{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
-        FillRect(memoryDc, &localCanvas, canvasBrush_);
-        SetViewportOrgEx(memoryDc, -canvasRect_.left, -canvasRect_.top, nullptr);
+        FillRect(canvasMemoryDc_, &localCanvas, canvasBrush_);
+        SetViewportOrgEx(canvasMemoryDc_, -canvasRect_.left, -canvasRect_.top, nullptr);
         if (model_.settings().renderEnabled) {
-            paintGrid(memoryDc);
+            paintGrid(canvasMemoryDc_);
         } else {
-            SetBkMode(memoryDc, TRANSPARENT);
-            SetTextColor(memoryDc, RGB(230, 230, 230));
-            DrawTextW(memoryDc, L"Rendering disabled", -1, &canvasRect_, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            SetBkMode(canvasMemoryDc_, TRANSPARENT);
+            SetTextColor(canvasMemoryDc_, RGB(230, 230, 230));
+            DrawTextW(canvasMemoryDc_, L"Rendering disabled", -1, &canvasRect_, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
-        SetViewportOrgEx(memoryDc, 0, 0, nullptr);
-        paintCanvasOverlay(memoryDc);
-        BitBlt(targetDc, canvasRect_.left, canvasRect_.top, width, height, memoryDc, 0, 0, SRCCOPY);
+        SetViewportOrgEx(canvasMemoryDc_, 0, 0, nullptr);
+        paintCanvasOverlay(canvasMemoryDc_);
+        BitBlt(targetDc, canvasRect_.left, canvasRect_.top, width, height, canvasMemoryDc_, 0, 0, SRCCOPY);
         ++framesSinceMetrics_;
+    }
 
-        SelectObject(memoryDc, oldBitmap);
-        DeleteObject(bitmap);
-        DeleteDC(memoryDc);
+    bool ensureCanvasBuffer(HDC targetDc, int width, int height) {
+        if (canvasMemoryDc_ != nullptr && canvasBitmap_ != nullptr &&
+            width == canvasBufferWidth_ && height == canvasBufferHeight_) {
+            return true;
+        }
+        destroyCanvasBuffer();
+
+        canvasMemoryDc_ = CreateCompatibleDC(targetDc);
+        canvasBitmap_ = CreateCompatibleBitmap(targetDc, width, height);
+        if (canvasMemoryDc_ == nullptr || canvasBitmap_ == nullptr) {
+            destroyCanvasBuffer();
+            return false;
+        }
+
+        canvasOldBitmap_ = SelectObject(canvasMemoryDc_, canvasBitmap_);
+        canvasBufferWidth_ = width;
+        canvasBufferHeight_ = height;
+        return true;
+    }
+
+    void destroyCanvasBuffer() {
+        if (canvasMemoryDc_ != nullptr) {
+            if (canvasOldBitmap_ != nullptr) {
+                SelectObject(canvasMemoryDc_, canvasOldBitmap_);
+            }
+            canvasOldBitmap_ = nullptr;
+        }
+        if (canvasBitmap_ != nullptr) {
+            DeleteObject(canvasBitmap_);
+            canvasBitmap_ = nullptr;
+        }
+        if (canvasMemoryDc_ != nullptr) {
+            DeleteDC(canvasMemoryDc_);
+            canvasMemoryDc_ = nullptr;
+        }
+        canvasBufferWidth_ = 0;
+        canvasBufferHeight_ = 0;
     }
 
     void paintCanvasOverlay(HDC hdc) {
@@ -1178,6 +1264,13 @@ private:
     int ticksAtLastMetrics_ = 0;
     double measuredFps_ = 0.0;
     double measuredStepsPerSecond_ = 0.0;
+    std::chrono::steady_clock::time_point lastStatsUpdate_;
+    bool hasLastToolPoint_ = false;
+    int lastToolCol_ = 0;
+    int lastToolRow_ = 0;
+    bool lastToolSecondary_ = false;
+    ToolMode lastToolMode_ = ToolMode::Food;
+    int lastToolBrushSize_ = 0;
 
     std::array<HBRUSH, CellStateCount> cellBrushes_{};
     HBRUSH eyeSlitBrush_ = nullptr;
@@ -1186,6 +1279,11 @@ private:
     HBRUSH fieldBrush_ = nullptr;
     HBRUSH fieldBorderBrush_ = nullptr;
     std::unordered_map<std::uint32_t, HBRUSH> renderBrushes_;
+    HDC canvasMemoryDc_ = nullptr;
+    HBITMAP canvasBitmap_ = nullptr;
+    HGDIOBJ canvasOldBitmap_ = nullptr;
+    int canvasBufferWidth_ = 0;
+    int canvasBufferHeight_ = 0;
 
     HWND playButton_ = nullptr;
     HWND stepButton_ = nullptr;
