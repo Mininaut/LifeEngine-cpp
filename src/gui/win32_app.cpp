@@ -109,7 +109,7 @@ public:
         wc.hInstance = instance;
         wc.lpszClassName = L"LifeEngineNativeWindow";
         wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        wc.hbrBackground = nullptr;
         RegisterClassExW(&wc);
 
         hwnd_ = CreateWindowExW(
@@ -171,6 +171,8 @@ private:
             layoutControls();
             InvalidateRect(hwnd_, nullptr, FALSE);
             return 0;
+        case WM_ERASEBKGND:
+            return 1;
         case WM_TIMER:
             onTimer();
             return 0;
@@ -315,6 +317,14 @@ private:
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     }
 
+    void setText(HWND control, const std::wstring& text) {
+        wchar_t current[256]{};
+        GetWindowTextW(control, current, 256);
+        if (text != current) {
+            SetWindowTextW(control, text.c_str());
+        }
+    }
+
     void layoutControls() {
         RECT client{};
         GetClientRect(hwnd_, &client);
@@ -442,7 +452,7 @@ private:
 
     void move(HWND control, int x, int y, int width, int height) {
         if (control != nullptr) {
-            MoveWindow(control, x, y, width, height, TRUE);
+            MoveWindow(control, x, y, width, height, FALSE);
         }
     }
 
@@ -461,11 +471,11 @@ private:
         if (source == speedSlider_) {
             int position = static_cast<int>(SendMessageW(speedSlider_, TBM_GETPOS, 0, 0));
             model_.setTargetFps(position);
-            SetWindowTextW(speedLabel_, (L"Speed: " + speedText()).c_str());
+            setText(speedLabel_, L"Speed: " + speedText());
         } else if (source == brushSlider_) {
             int position = static_cast<int>(SendMessageW(brushSlider_, TBM_GETPOS, 0, 0));
             model_.setBrushSize(position);
-            SetWindowTextW(brushLabel_, (L"Brush: " + std::to_wstring(position)).c_str());
+            setText(brushLabel_, L"Brush: " + std::to_wstring(position));
         }
     }
 
@@ -473,7 +483,7 @@ private:
         switch (id) {
         case IdPlay:
             model_.toggleRunning();
-            SetWindowTextW(playButton_, model_.settings().running ? L"Pause" : L"Play");
+            setText(playButton_, model_.settings().running ? L"Pause" : L"Play");
             break;
         case IdStep:
             model_.stepOnce();
@@ -504,7 +514,7 @@ private:
             break;
         case IdRender:
             model_.toggleRenderEnabled();
-            SetWindowTextW(renderButton_, model_.settings().renderEnabled ? L"Render On" : L"Render Off");
+            setText(renderButton_, model_.settings().renderEnabled ? L"Render On" : L"Render Off");
             InvalidateRect(hwnd_, &canvasRect_, FALSE);
             break;
         case IdRandomWalls:
@@ -548,14 +558,12 @@ private:
     }
 
     std::pair<int, int> screenToGrid(int x, int y) const {
-        double cellPixels = scaledCellSize();
-        int col = static_cast<int>(std::floor((x - canvasRect_.left - panX_) / cellPixels));
-        int row = static_cast<int>(std::floor((y - canvasRect_.top - panY_) / cellPixels));
-        return {col, row};
+        GridPoint point = viewport_.screenToGrid(x - canvasRect_.left, y - canvasRect_.top, model_.settings().cellSize);
+        return {point.col, point.row};
     }
 
     double scaledCellSize() const {
-        return std::max(1.0, model_.settings().cellSize * viewScale_);
+        return viewport_.scaledCellSize(model_.settings().cellSize);
     }
 
     void beginPan(int x, int y) {
@@ -569,8 +577,7 @@ private:
     }
 
     void updatePan(int x, int y) {
-        panX_ += x - lastPanX_;
-        panY_ += y - lastPanY_;
+        viewport_.panBy(x - lastPanX_, y - lastPanY_);
         lastPanX_ = x;
         lastPanY_ = y;
         InvalidateRect(hwnd_, &canvasRect_, FALSE);
@@ -582,22 +589,13 @@ private:
         if (!pointInCanvas(point.x, point.y)) {
             return;
         }
-        double oldScale = viewScale_;
         double factor = delta > 0 ? 1.2 : (1.0 / 1.2);
-        viewScale_ = std::clamp(viewScale_ * factor, 0.125, 32.0);
-        double localX = point.x - canvasRect_.left;
-        double localY = point.y - canvasRect_.top;
-        double worldX = (localX - panX_) / oldScale;
-        double worldY = (localY - panY_) / oldScale;
-        panX_ = localX - (worldX * viewScale_);
-        panY_ = localY - (worldY * viewScale_);
+        viewport_.zoomAt(point.x - canvasRect_.left, point.y - canvasRect_.top, factor);
         InvalidateRect(hwnd_, &canvasRect_, FALSE);
     }
 
     void resetView() {
-        viewScale_ = 1.0;
-        panX_ = 0.0;
-        panY_ = 0.0;
+        viewport_.reset();
         InvalidateRect(hwnd_, &canvasRect_, FALSE);
     }
 
@@ -699,43 +697,60 @@ private:
     }
 
     void refreshControlsFromModel() {
-        SetWindowTextW(speedLabel_, (L"Speed: " + speedText()).c_str());
-        SetWindowTextW(brushLabel_, (L"Brush: " + std::to_wstring(model_.settings().brushSize)).c_str());
+        setText(speedLabel_, L"Speed: " + speedText());
+        setText(brushLabel_, L"Brush: " + std::to_wstring(model_.settings().brushSize));
         updateStats();
     }
 
     void updateStats() {
         StatsSnapshot stats = model_.stats();
-        SetWindowTextW(tickLabel_, (L"Ticks: " + std::to_wstring(stats.ticks)).c_str());
-        SetWindowTextW(populationLabel_, (L"Population: " + std::to_wstring(stats.organisms)).c_str());
-        SetWindowTextW(speciesLabel_, (L"Species: " + std::to_wstring(stats.species)).c_str());
-        SetWindowTextW(mutationLabel_, (L"Avg mutation: " + fixedDouble(stats.averageMutability)).c_str());
-        SetWindowTextW(largestLabel_, (L"Largest: " + std::to_wstring(stats.largestCellCount)).c_str());
-        SetWindowTextW(topSpeciesLabel_, (L"Top species: " + widen(stats.topSpecies)).c_str());
+        setText(tickLabel_, L"Ticks: " + std::to_wstring(stats.ticks));
+        setText(populationLabel_, L"Population: " + std::to_wstring(stats.organisms));
+        setText(speciesLabel_, L"Species: " + std::to_wstring(stats.species));
+        setText(mutationLabel_, L"Avg mutation: " + fixedDouble(stats.averageMutability));
+        setText(largestLabel_, L"Largest: " + std::to_wstring(stats.largestCellCount));
+        setText(topSpeciesLabel_, L"Top species: " + widen(stats.topSpecies));
     }
 
     void paint() {
         PAINTSTRUCT ps{};
         HDC hdc = BeginPaint(hwnd_, &ps);
-        RECT client{};
-        GetClientRect(hwnd_, &client);
-        FillRect(hdc, &client, canvasBrush_);
         FillRect(hdc, &panelRect_, panelBrush_);
-        if (model_.settings().renderEnabled) {
-            paintGrid(hdc);
-        } else {
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(230, 230, 230));
-            DrawTextW(hdc, L"Rendering disabled", -1, &canvasRect_, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        }
+        paintCanvasBuffered(hdc);
         EndPaint(hwnd_, &ps);
+    }
+
+    void paintCanvasBuffered(HDC targetDc) {
+        int width = canvasWidth();
+        int height = canvasHeight();
+        HDC memoryDc = CreateCompatibleDC(targetDc);
+        HBITMAP bitmap = CreateCompatibleBitmap(targetDc, width, height);
+        HGDIOBJ oldBitmap = SelectObject(memoryDc, bitmap);
+
+        RECT localCanvas{0, 0, static_cast<LONG>(width), static_cast<LONG>(height)};
+        FillRect(memoryDc, &localCanvas, canvasBrush_);
+        SetViewportOrgEx(memoryDc, -canvasRect_.left, -canvasRect_.top, nullptr);
+        if (model_.settings().renderEnabled) {
+            paintGrid(memoryDc);
+        } else {
+            SetBkMode(memoryDc, TRANSPARENT);
+            SetTextColor(memoryDc, RGB(230, 230, 230));
+            DrawTextW(memoryDc, L"Rendering disabled", -1, &canvasRect_, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+        SetViewportOrgEx(memoryDc, 0, 0, nullptr);
+        BitBlt(targetDc, canvasRect_.left, canvasRect_.top, width, height, memoryDc, 0, 0, SRCCOPY);
+
+        SelectObject(memoryDc, oldBitmap);
+        DeleteObject(bitmap);
+        DeleteDC(memoryDc);
     }
 
     void paintGrid(HDC hdc) {
         const WorldEnvironment& world = model_.world();
         int size = static_cast<int>(std::round(scaledCellSize()));
         for (int col = 0; col < world.gridMap.cols; ++col) {
-            int x = static_cast<int>(std::round(canvasRect_.left + panX_ + (col * size)));
+            ScreenPoint point = viewport_.gridToScreen(col, 0, model_.settings().cellSize);
+            int x = static_cast<int>(std::round(canvasRect_.left + point.x));
             if (x >= canvasRect_.right) {
                 break;
             }
@@ -743,7 +758,8 @@ private:
                 continue;
             }
             for (int row = 0; row < world.gridMap.rows; ++row) {
-                int y = static_cast<int>(std::round(canvasRect_.top + panY_ + (row * size)));
+                ScreenPoint rowPoint = viewport_.gridToScreen(col, row, model_.settings().cellSize);
+                int y = static_cast<int>(std::round(canvasRect_.top + rowPoint.y));
                 if (y >= canvasRect_.bottom) {
                     break;
                 }
@@ -812,9 +828,7 @@ private:
     bool panning_ = false;
     int lastPanX_ = 0;
     int lastPanY_ = 0;
-    double viewScale_ = 1.0;
-    double panX_ = 0.0;
-    double panY_ = 0.0;
+    Viewport viewport_;
     std::chrono::steady_clock::time_point lastTick_;
 
     std::array<HBRUSH, CellStateCount> cellBrushes_{};

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace lifeengine::gui {
@@ -51,6 +52,89 @@ struct StatsSnapshot {
     std::string topSpecies;
 };
 
+struct GridPoint {
+    int col = 0;
+    int row = 0;
+};
+
+struct ScreenPoint {
+    double x = 0.0;
+    double y = 0.0;
+};
+
+class Viewport {
+public:
+    void reset();
+    void panBy(double dx, double dy);
+    void zoomAt(double localX, double localY, double factor);
+    GridPoint screenToGrid(double localX, double localY, int cellSize) const;
+    ScreenPoint gridToScreen(int col, int row, int cellSize) const;
+    double scaledCellSize(int cellSize) const;
+
+    double scale() const;
+    double offsetX() const;
+    double offsetY() const;
+
+private:
+    double scale_ = 1.0;
+    double offsetX_ = 0.0;
+    double offsetY_ = 0.0;
+};
+
+class WorldDocument {
+public:
+    WorldDocument(int cols = 160, int rows = 100, int cellSize = 5, std::uint32_t seed = 1);
+
+    void reset(bool withOrigin = true);
+    void clear();
+    void resizeToCanvas(int canvasWidth, int canvasHeight, int cellSize);
+    void randomizeWalls(double densityPercent = 4.0);
+
+    WorldEnvironment& world();
+    const WorldEnvironment& world() const;
+
+private:
+    WorldEnvironment world_;
+};
+
+class SimulationRuntime {
+public:
+    void setRunning(bool running);
+    void toggleRunning();
+    bool running() const;
+    void setTargetFps(int fps);
+    int targetFps() const;
+    void advance(WorldEnvironment& world, std::chrono::milliseconds elapsed);
+    void stepOnce(WorldEnvironment& world);
+    void resetAccumulator();
+
+private:
+    bool running_ = true;
+    int targetFps_ = 60;
+    double stepAccumulator_ = 0.0;
+};
+
+class EditorModel {
+public:
+    EditorModel(int cellSize = 13, std::uint32_t seed = 2);
+
+    void setDefaultOrganism();
+    bool addCellAtGrid(int col, int row, CellState state);
+    bool removeCellAtGrid(int col, int row);
+    bool rotateEyeAtGrid(int col, int row);
+    Organism& organism();
+    const Organism& organism() const;
+    WorldEnvironment& world();
+    const WorldEnvironment& world() const;
+
+private:
+    std::pair<int, int> toLocal(int col, int row) const;
+    void repaintOrganism();
+
+    WorldEnvironment editorWorld_;
+    Organism* organism_ = nullptr;
+};
+
 class SimulationGuiModel {
 public:
     SimulationGuiModel(int cols = 160, int rows = 100, int cellSize = 5, std::uint32_t seed = 1);
@@ -75,6 +159,12 @@ public:
 
     WorldEnvironment& world();
     const WorldEnvironment& world() const;
+    WorldDocument& worldDocument();
+    const WorldDocument& worldDocument() const;
+    SimulationRuntime& runtime();
+    const SimulationRuntime& runtime() const;
+    EditorModel& editor();
+    const EditorModel& editor() const;
     GuiSettings& settings();
     const GuiSettings& settings() const;
 
@@ -82,9 +172,10 @@ private:
     void applyCellBrush(int col, int row, CellState state, bool killBlocking, CellState ignoredState);
     void killBrush(int col, int row);
 
-    WorldEnvironment world_;
+    WorldDocument worldDocument_;
+    SimulationRuntime runtime_;
+    EditorModel editor_;
     GuiSettings settings_;
-    double stepAccumulator_ = 0.0;
 };
 
 int runNativeGui(int showCommand);
