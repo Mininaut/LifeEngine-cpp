@@ -13,7 +13,7 @@
 
 namespace lifeengine {
 
-enum class CellState {
+enum class CellState : std::uint8_t {
     Empty = 0,
     Food,
     Wall,
@@ -32,7 +32,7 @@ CellState stateFromName(const std::string& name);
 std::size_t stateIndex(CellState state);
 const std::array<CellState, 6>& livingStates();
 
-enum class Direction {
+enum class Direction : std::uint8_t {
     Up = 0,
     Right = 1,
     Down = 2,
@@ -99,13 +99,11 @@ struct GridCell {
     CellState state = CellState::Empty;
     int col = 0;
     int row = 0;
-    int x = 0;
-    int y = 0;
     Organism* owner = nullptr;
     BodyCell* cellOwner = nullptr;
 
     GridCell() = default;
-    GridCell(CellState state, int col, int row, int x, int y);
+    GridCell(CellState state, int col, int row);
     void setType(CellState nextState);
 };
 
@@ -119,13 +117,21 @@ public:
         if (!isValidLoc(col, row)) {
             return nullptr;
         }
-        return &grid_[static_cast<std::size_t>(col * rows + row)];
+        return cellAtUnchecked(col, row);
     }
 
     const GridCell* cellAt(int col, int row) const {
         if (!isValidLoc(col, row)) {
             return nullptr;
         }
+        return cellAtUnchecked(col, row);
+    }
+
+    GridCell* cellAtUnchecked(int col, int row) {
+        return &grid_[static_cast<std::size_t>(col * rows + row)];
+    }
+
+    const GridCell* cellAtUnchecked(int col, int row) const {
         return &grid_[static_cast<std::size_t>(col * rows + row)];
     }
 
@@ -153,7 +159,7 @@ struct Observation {
     Direction direction = Direction::Up;
 };
 
-enum class Decision {
+enum class Decision : std::uint8_t {
     Neutral = 0,
     Retreat = 1,
     Chase = 2,
@@ -186,6 +192,7 @@ public:
 
     void setOwner(Organism* owner);
     void clear();
+    void reserveCells(std::size_t count);
     bool canAddCellAt(int col, int row) const;
     BodyCell* addDefaultCell(CellState state, int col, int row);
     BodyCell* addRandomizedCell(CellState state, int col, int row, Random& rng);
@@ -194,6 +201,7 @@ public:
     bool removeCell(int col, int row, bool allowCenterRemoval = false);
     BodyCell* getLocalCell(int col, int row);
     const BodyCell* getLocalCell(int col, int row) const;
+    bool hasNeighborAt(int col, int row) const;
     std::vector<BodyCell*> neighborsOfCell(int col, int row);
     BodyCell* randomCell(Random& rng);
     const BodyCell* randomCell(Random& rng) const;
@@ -210,6 +218,8 @@ public:
     int birthDistance = 4;
 
 private:
+    void markTypePresent(CellState state);
+
     Organism* owner_ = nullptr;
     std::vector<std::unique_ptr<BodyCell>> cells_;
 };
@@ -225,6 +235,7 @@ public:
     int realCol() const;
     int realRow() const;
     GridCell* realCell() const;
+    std::pair<int, int> rotatedOffset(Direction dir) const;
     int rotatedCol(Direction dir) const;
     int rotatedRow(Direction dir) const;
     Direction absoluteDirection() const;
@@ -280,6 +291,8 @@ public:
 
 private:
     WorldEnvironment* env_ = nullptr;
+
+    void reserveRecordCapacity();
 };
 
 class Organism {
@@ -336,6 +349,7 @@ public:
     bool canAddOrganism() const;
     double averageMutability() const;
     void changeCell(int col, int row, CellState state, BodyCell* owner);
+    void changeCellUnchecked(int col, int row, CellState state, BodyCell* owner);
     void clearWalls();
     void clearOrganisms();
     void clearDeadOrganisms();
@@ -357,7 +371,7 @@ public:
     FossilRecord fossilRecord;
 
 private:
-    void compactOrganismsFromIndexes(std::vector<std::size_t>& organismIndexes);
+    void compactOrganismsFromIndexes(std::vector<std::size_t>& organismIndexes, bool alreadySorted = false);
 
     std::vector<std::size_t> removalScratch_;
 };

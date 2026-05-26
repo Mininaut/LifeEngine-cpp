@@ -36,6 +36,10 @@ void testRotation() {
     check(cell->rotatedRow(lifeengine::Direction::Left) == -2, "left rotated row");
     check(cell->rotatedCol(lifeengine::Direction::Right) == 1, "right rotated col");
     check(cell->rotatedRow(lifeengine::Direction::Right) == 2, "right rotated row");
+    check(cell->rotatedOffset(lifeengine::Direction::Up) == std::make_pair(2, -1), "up rotated offset");
+    check(cell->rotatedOffset(lifeengine::Direction::Down) == std::make_pair(-2, 1), "down rotated offset");
+    check(cell->rotatedOffset(lifeengine::Direction::Left) == std::make_pair(-1, -2), "left rotated offset");
+    check(cell->rotatedOffset(lifeengine::Direction::Right) == std::make_pair(1, 2), "right rotated offset");
 }
 
 void testGridOwnership() {
@@ -47,6 +51,30 @@ void testGridOwnership() {
     check(cell->state == lifeengine::CellState::Mouth, "grid state written");
     check(cell->owner == &org, "grid owner written");
     check(cell->cellOwner == org.anatomy.getLocalCell(0, 0), "grid cell owner written");
+}
+
+void testCellAtBounds() {
+    lifeengine::WorldEnvironment env(1, 4, 3, 13);
+
+    check(env.gridMap.cellAt(0, 0) != nullptr, "cellAt accepts origin");
+    check(env.gridMap.cellAt(3, 2) != nullptr, "cellAt accepts last valid cell");
+    check(env.gridMap.cellAt(-1, 0) == nullptr, "cellAt rejects negative col");
+    check(env.gridMap.cellAt(0, -1) == nullptr, "cellAt rejects negative row");
+    check(env.gridMap.cellAt(4, 0) == nullptr, "cellAt rejects col at width");
+    check(env.gridMap.cellAt(0, 3) == nullptr, "cellAt rejects row at height");
+}
+
+void testChangeCellUncheckedAndSafeWrapper() {
+    lifeengine::WorldEnvironment env(1, 10, 10, 20);
+    lifeengine::Organism& org = addSingleCellOrganism(env, 2, 2, lifeengine::CellState::Mouth);
+    lifeengine::BodyCell* owner = org.anatomy.getLocalCell(0, 0);
+
+    env.changeCellUnchecked(3, 3, lifeengine::CellState::Producer, owner);
+    check(env.gridMap.cellAt(3, 3)->state == lifeengine::CellState::Producer, "unchecked change writes state");
+    check(env.gridMap.cellAt(3, 3)->owner == &org, "unchecked change writes owner");
+
+    env.changeCell(-1, -1, lifeengine::CellState::Wall, nullptr);
+    check(env.walls.empty(), "safe change ignores invalid wall coordinate");
 }
 
 void testMouthEating() {
@@ -154,6 +182,38 @@ void testInheritedCellsRebaseOwner() {
     check(child.anatomy.getLocalCell(1, 0)->direction == lifeengine::Direction::Left, "inherited eye direction copied");
 }
 
+void testAnatomyNeighborProbe() {
+    lifeengine::WorldEnvironment env(1, 20, 20, 85);
+    auto organism = std::make_unique<lifeengine::Organism>(10, 10, &env);
+    organism->anatomy.addDefaultCell(lifeengine::CellState::Mouth, 0, 0);
+    organism->anatomy.addDefaultCell(lifeengine::CellState::Producer, 2, 0);
+
+    check(organism->anatomy.hasNeighborAt(1, 0), "neighbor probe sees adjacent body cell");
+    check(!organism->anatomy.hasNeighborAt(4, 4), "neighbor probe rejects isolated location");
+    check(organism->anatomy.isProducer, "incremental type flags track added producer");
+}
+
+void testAnatomyRemovalRecalculatesTypeFlags() {
+    lifeengine::WorldEnvironment env(1, 20, 20, 86);
+    auto organism = std::make_unique<lifeengine::Organism>(10, 10, &env);
+    organism->anatomy.addDefaultCell(lifeengine::CellState::Mouth, 0, 0);
+    organism->anatomy.addDefaultCell(lifeengine::CellState::Producer, 1, 0);
+    organism->anatomy.addDefaultCell(lifeengine::CellState::Mover, 0, 1);
+    organism->anatomy.addDefaultCell(lifeengine::CellState::Eye, -1, 0);
+
+    check(organism->anatomy.isProducer, "producer flag set before removal");
+    check(organism->anatomy.isMover, "mover flag set before removal");
+    check(organism->anatomy.hasEyes, "eye flag set before removal");
+
+    organism->anatomy.removeCell(1, 0);
+    organism->anatomy.removeCell(0, 1);
+    organism->anatomy.removeCell(-1, 0);
+
+    check(!organism->anatomy.isProducer, "producer flag cleared after removal");
+    check(!organism->anatomy.isMover, "mover flag cleared after removal");
+    check(!organism->anatomy.hasEyes, "eye flag cleared after removal");
+}
+
 void testSeededRandomOrganismDeterminism() {
     lifeengine::WorldEnvironment first(1, 30, 30, 90);
     lifeengine::WorldEnvironment second(1, 30, 30, 90);
@@ -170,6 +230,21 @@ void testSeededRandomOrganismDeterminism() {
     }
 }
 
+void testRandomOrganismFullFirstLayerCoverage() {
+    lifeengine::WorldEnvironment env(1, 30, 30, 91);
+    auto organism = lifeengine::generateRandomOrganism(env, 1, 1.0);
+
+    check(organism->anatomy.cells().size() == 9, "full first layer random organism cell count");
+    check(organism->anatomy.getLocalCell(-1, -1) != nullptr, "full first layer has top left");
+    check(organism->anatomy.getLocalCell(0, -1) != nullptr, "full first layer has top");
+    check(organism->anatomy.getLocalCell(1, -1) != nullptr, "full first layer has top right");
+    check(organism->anatomy.getLocalCell(-1, 0) != nullptr, "full first layer has left");
+    check(organism->anatomy.getLocalCell(1, 0) != nullptr, "full first layer has right");
+    check(organism->anatomy.getLocalCell(-1, 1) != nullptr, "full first layer has bottom left");
+    check(organism->anatomy.getLocalCell(0, 1) != nullptr, "full first layer has bottom");
+    check(organism->anatomy.getLocalCell(1, 1) != nullptr, "full first layer has bottom right");
+}
+
 void testFossilRecordCap() {
     lifeengine::WorldEnvironment env(1, 10, 10, 8);
     env.fossilRecord.recordSizeLimit = 5;
@@ -180,6 +255,27 @@ void testFossilRecordCap() {
 
     check(env.fossilRecord.tickRecord.size() == 5, "fossil record cap");
     check(env.fossilRecord.tickRecord.front() == 7, "fossil record drops oldest");
+    check(env.fossilRecord.tickRecord.capacity() >= env.fossilRecord.recordSizeLimit, "fossil record reserves cap");
+}
+
+void testFossilRecordExactCapThenOverflow() {
+    lifeengine::WorldEnvironment env(1, 10, 10, 14);
+    env.fossilRecord.recordSizeLimit = 3;
+    env.fossilRecord.clearRecord();
+
+    for (int i = 1; i <= 2; ++i) {
+        env.totalTicks = i;
+        env.fossilRecord.updateData();
+    }
+
+    check(env.fossilRecord.tickRecord.size() == 3, "fossil exact cap includes clear record seed");
+    check(env.fossilRecord.tickRecord.front() == 0, "fossil exact cap keeps first record");
+
+    env.totalTicks = 3;
+    env.fossilRecord.updateData();
+
+    check(env.fossilRecord.tickRecord.size() == 3, "fossil overflow keeps cap size");
+    check(env.fossilRecord.tickRecord.front() == 1, "fossil overflow drops exactly one oldest record");
 }
 
 void testOriginOfLife() {
@@ -218,6 +314,22 @@ void testRemoveOrganismsCompactsInOnePass() {
     check(env.totalMutability == first.mutability + third.mutability, "remove organisms updates total mutability");
 }
 
+void testRemoveOrganismsHandlesEmptyAndAllRemoved() {
+    lifeengine::WorldEnvironment env(1, 20, 20, 15);
+    env.config.autoReset = false;
+    addSingleCellOrganism(env, 1, 1, lifeengine::CellState::Mouth);
+    addSingleCellOrganism(env, 2, 2, lifeengine::CellState::Mouth);
+    int totalMutability = env.totalMutability;
+
+    env.removeOrganisms({});
+    check(env.organismCount() == 2, "empty remove keeps organisms");
+    check(env.totalMutability == totalMutability, "empty remove keeps total mutability");
+
+    env.removeOrganisms({1, 0, 1});
+    check(env.organismCount() == 0, "remove all with duplicates clears organisms");
+    check(env.totalMutability == 0, "remove all clears total mutability");
+}
+
 void testRepeatedWallWritesDoNotDuplicateWallIndex() {
     lifeengine::WorldEnvironment env(1, 10, 10, 12);
 
@@ -236,6 +348,8 @@ void testRepeatedWallWritesDoNotDuplicateWallIndex() {
 int main() {
     testRotation();
     testGridOwnership();
+    testCellAtBounds();
+    testChangeCellUncheckedAndSafeWrapper();
     testMouthEating();
     testProducer();
     testBrainDecision();
@@ -244,11 +358,16 @@ int main() {
     testMovement();
     testBoundaryClearChecks();
     testInheritedCellsRebaseOwner();
+    testAnatomyNeighborProbe();
+    testAnatomyRemovalRecalculatesTypeFlags();
     testSeededRandomOrganismDeterminism();
+    testRandomOrganismFullFirstLayerCoverage();
     testFossilRecordCap();
+    testFossilRecordExactCapThenOverflow();
     testOriginOfLife();
     testAutoResetReseedsOrigin();
     testRemoveOrganismsCompactsInOnePass();
+    testRemoveOrganismsHandlesEmptyAndAllRemoved();
     testRepeatedWallWritesDoNotDuplicateWallIndex();
 
     if (failures != 0) {

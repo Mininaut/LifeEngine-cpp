@@ -46,6 +46,27 @@ const std::array<CellState, 6> kLivingStates = {
     CellState::Eye,
 };
 
+const std::array<Direction, 4> kOppositeDirections = {
+    Direction::Down,
+    Direction::Left,
+    Direction::Up,
+    Direction::Right,
+};
+
+const std::array<Direction, 4> kRotateRightDirections = {
+    Direction::Right,
+    Direction::Down,
+    Direction::Left,
+    Direction::Up,
+};
+
+const std::array<std::pair<int, int>, 4> kDirectionScalars = {
+    std::make_pair(0, -1),
+    std::make_pair(1, 0),
+    std::make_pair(0, 1),
+    std::make_pair(-1, 0),
+};
+
 std::string randomSpeciesName(Random& rng) {
     static constexpr char alphabet[] = "0123456789abcdefghijklmnopqrstuvwxyz";
     std::string name;
@@ -104,35 +125,15 @@ const std::array<CellState, 6>& livingStates() {
 }
 
 Direction opposite(Direction dir) {
-    switch (dir) {
-    case Direction::Up:
-        return Direction::Down;
-    case Direction::Right:
-        return Direction::Left;
-    case Direction::Down:
-        return Direction::Up;
-    case Direction::Left:
-        return Direction::Right;
-    }
-    return Direction::Up;
+    return kOppositeDirections[static_cast<std::size_t>(dir)];
 }
 
 Direction rotateRight(Direction dir) {
-    return static_cast<Direction>((static_cast<int>(dir) + 1) % 4);
+    return kRotateRightDirections[static_cast<std::size_t>(dir)];
 }
 
 std::pair<int, int> directionScalar(Direction dir) {
-    switch (dir) {
-    case Direction::Up:
-        return {0, -1};
-    case Direction::Right:
-        return {1, 0};
-    case Direction::Down:
-        return {0, 1};
-    case Direction::Left:
-        return {-1, 0};
-    }
-    return {0, -1};
+    return kDirectionScalars[static_cast<std::size_t>(dir)];
 }
 
 Random::Random(std::uint32_t seedValue) : engine_(seedValue) {}
@@ -181,8 +182,8 @@ Hyperparameters::Hyperparameters() {
     growableNeighbors.assign(kAdjacent.begin(), kAdjacent.end());
 }
 
-GridCell::GridCell(CellState initialState, int initialCol, int initialRow, int initialX, int initialY)
-    : state(initialState), col(initialCol), row(initialRow), x(initialX), y(initialY) {}
+GridCell::GridCell(CellState initialState, int initialCol, int initialRow)
+    : state(initialState), col(initialCol), row(initialRow) {}
 
 void GridCell::setType(CellState nextState) {
     state = nextState;
@@ -200,7 +201,7 @@ void GridMap::resize(int nextCols, int nextRows, int nextCellSize) {
     grid_.reserve(static_cast<std::size_t>(cols * rows));
     for (int c = 0; c < cols; ++c) {
         for (int r = 0; r < rows; ++r) {
-            grid_.emplace_back(CellState::Empty, c, r, c * cellSize, r * cellSize);
+            grid_.emplace_back(CellState::Empty, c, r);
         }
     }
 }
@@ -332,6 +333,10 @@ void Anatomy::clear() {
     birthDistance = 4;
 }
 
+void Anatomy::reserveCells(std::size_t count) {
+    cells_.reserve(count);
+}
+
 bool Anatomy::canAddCellAt(int col, int row) const {
     return getLocalCell(col, row) == nullptr;
 }
@@ -341,7 +346,7 @@ BodyCell* Anatomy::addDefaultCell(CellState state, int col, int row) {
     cell->initDefault();
     BodyCell* result = cell.get();
     cells_.push_back(std::move(cell));
-    checkTypeChange();
+    markTypePresent(state);
     return result;
 }
 
@@ -353,7 +358,7 @@ BodyCell* Anatomy::addRandomizedCell(CellState state, int col, int row, Random& 
     cell->initRandom(rng);
     BodyCell* result = cell.get();
     cells_.push_back(std::move(cell));
-    checkTypeChange();
+    markTypePresent(state);
     return result;
 }
 
@@ -362,7 +367,7 @@ BodyCell* Anatomy::addInheritedCell(const BodyCell& parent) {
     cell->initInherit(parent);
     BodyCell* result = cell.get();
     cells_.push_back(std::move(cell));
-    checkTypeChange();
+    markTypePresent(parent.state);
     return result;
 }
 
@@ -407,8 +412,20 @@ const BodyCell* Anatomy::getLocalCell(int col, int row) const {
     return nullptr;
 }
 
+bool Anatomy::hasNeighborAt(int col, int row) const {
+    for (int x = -1; x <= 1; ++x) {
+        for (int y = -1; y <= 1; ++y) {
+            if (getLocalCell(col + x, row + y) != nullptr) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 std::vector<BodyCell*> Anatomy::neighborsOfCell(int col, int row) {
     std::vector<BodyCell*> neighbors;
+    neighbors.reserve(9);
     for (int x = -1; x <= 1; ++x) {
         for (int y = -1; y <= 1; ++y) {
             if (BodyCell* neighbor = getLocalCell(col + x, row + y)) {
@@ -452,15 +469,7 @@ void Anatomy::checkTypeChange() {
     isMover = false;
     hasEyes = false;
     for (const auto& cell : cells_) {
-        if (cell->state == CellState::Producer) {
-            isProducer = true;
-        }
-        if (cell->state == CellState::Mover) {
-            isMover = true;
-        }
-        if (cell->state == CellState::Eye) {
-            hasEyes = true;
-        }
+        markTypePresent(cell->state);
     }
 }
 
@@ -475,6 +484,16 @@ const std::vector<std::unique_ptr<BodyCell>>& Anatomy::cells() const {
 
 std::vector<std::unique_ptr<BodyCell>>& Anatomy::cells() {
     return cells_;
+}
+
+void Anatomy::markTypePresent(CellState state) {
+    if (state == CellState::Producer) {
+        isProducer = true;
+    } else if (state == CellState::Mover) {
+        isMover = true;
+    } else if (state == CellState::Eye) {
+        hasEyes = true;
+    }
 }
 
 BodyCell::BodyCell(CellState initialState, Organism* initialOrg, int initialLocCol, int initialLocRow)
@@ -511,7 +530,7 @@ void BodyCell::performFunction() {
         for (const auto& loc : env.hyper.edibleNeighbors) {
             GridCell* cell = env.gridMap.cellAt(realC + loc.first, realR + loc.second);
             if (cell != nullptr && cell->state == CellState::Food) {
-                env.changeCell(cell->col, cell->row, CellState::Empty, nullptr);
+                env.changeCellUnchecked(cell->col, cell->row, CellState::Empty, nullptr);
                 ++org->foodCollected;
             }
         }
@@ -528,7 +547,7 @@ void BodyCell::performFunction() {
             auto loc = neighbors[env.rng.intExclusive(static_cast<int>(neighbors.size()))];
             GridCell* cell = env.gridMap.cellAt(realC + loc.first, realR + loc.second);
             if (cell != nullptr && cell->state == CellState::Empty) {
-                env.changeCell(cell->col, cell->row, CellState::Food, nullptr);
+                env.changeCellUnchecked(cell->col, cell->row, CellState::Food, nullptr);
             }
         }
         break;
@@ -567,35 +586,34 @@ int BodyCell::realRow() const {
 }
 
 GridCell* BodyCell::realCell() const {
-    return org->env->gridMap.cellAt(realCol(), realRow());
+    auto [offsetCol, offsetRow] = rotatedOffset(org->rotation);
+    return org->env->gridMap.cellAt(org->c + offsetCol, org->r + offsetRow);
+}
+
+std::pair<int, int> BodyCell::rotatedOffset(Direction dir) const {
+    switch (dir) {
+    case Direction::Up:
+        return {locCol, locRow};
+    case Direction::Down:
+        return {-locCol, -locRow};
+    case Direction::Left:
+        return {locRow, -locCol};
+    case Direction::Right:
+        return {-locRow, locCol};
+    }
+    return {locCol, locRow};
 }
 
 int BodyCell::rotatedCol(Direction dir) const {
-    switch (dir) {
-    case Direction::Up:
-        return locCol;
-    case Direction::Down:
-        return -locCol;
-    case Direction::Left:
-        return locRow;
-    case Direction::Right:
-        return -locRow;
-    }
-    return locCol;
+    auto [offsetCol, offsetRow] = rotatedOffset(dir);
+    (void)offsetRow;
+    return offsetCol;
 }
 
 int BodyCell::rotatedRow(Direction dir) const {
-    switch (dir) {
-    case Direction::Up:
-        return locRow;
-    case Direction::Down:
-        return -locRow;
-    case Direction::Left:
-        return -locCol;
-    case Direction::Right:
-        return locCol;
-    }
-    return locRow;
+    auto [offsetCol, offsetRow] = rotatedOffset(dir);
+    (void)offsetCol;
+    return offsetRow;
 }
 
 Direction BodyCell::absoluteDirection() const {
@@ -659,6 +677,7 @@ void FossilRecord::setEnv(WorldEnvironment* env) {
     averageMutRates.clear();
     averageCells.clear();
     averageCellCounts.clear();
+    reserveRecordCapacity();
     updateData();
 }
 
@@ -730,6 +749,7 @@ void FossilRecord::clearRecord() {
     averageMutRates.clear();
     averageCells.clear();
     averageCellCounts.clear();
+    reserveRecordCapacity();
     updateData();
 }
 
@@ -737,6 +757,7 @@ void FossilRecord::updateData() {
     if (env_ == nullptr) {
         return;
     }
+    reserveRecordCapacity();
     tickRecord.push_back(env_->totalTicks);
     popCounts.push_back(static_cast<int>(env_->organisms.size()));
     speciesCounts.push_back(numExtantSpecies());
@@ -783,6 +804,26 @@ void FossilRecord::calcCellCountAverages() {
     averageCellCounts.push_back(cellCounts);
 }
 
+void FossilRecord::reserveRecordCapacity() {
+    if (recordSizeLimit == 0) {
+        return;
+    }
+    if (tickRecord.capacity() >= recordSizeLimit &&
+        popCounts.capacity() >= recordSizeLimit &&
+        speciesCounts.capacity() >= recordSizeLimit &&
+        averageMutRates.capacity() >= recordSizeLimit &&
+        averageCells.capacity() >= recordSizeLimit &&
+        averageCellCounts.capacity() >= recordSizeLimit) {
+        return;
+    }
+    tickRecord.reserve(recordSizeLimit);
+    popCounts.reserve(recordSizeLimit);
+    speciesCounts.reserve(recordSizeLimit);
+    averageMutRates.reserve(recordSizeLimit);
+    averageCells.reserve(recordSizeLimit);
+    averageCellCounts.reserve(recordSizeLimit);
+}
+
 Organism::Organism(int col, int row, WorldEnvironment* initialEnv, const Organism* parent)
     : c(col),
       r(row),
@@ -799,6 +840,7 @@ void Organism::inherit(const Organism& parent) {
     moveRange = parent.moveRange;
     mutability = parent.mutability;
     species = parent.species;
+    anatomy.reserveCells(parent.anatomy.cells().size());
     for (const auto& cell : parent.anatomy.cells()) {
         anatomy.addInheritedCell(*cell);
     }
@@ -910,7 +952,8 @@ bool Organism::attemptMove() {
     int newR = r + step.second;
     if (isClear(newC, newR, rotation)) {
         for (const auto& cell : anatomy.cells()) {
-            env->changeCell(c + cell->rotatedCol(rotation), r + cell->rotatedRow(rotation), CellState::Empty, nullptr);
+            auto [offsetCol, offsetRow] = cell->rotatedOffset(rotation);
+            env->changeCellUnchecked(c + offsetCol, r + offsetRow, CellState::Empty, nullptr);
         }
         c = newC;
         r = newR;
@@ -929,7 +972,8 @@ bool Organism::attemptRotate() {
     Direction newRotation = env->rng.direction();
     if (isClear(c, r, newRotation)) {
         for (const auto& cell : anatomy.cells()) {
-            env->changeCell(c + cell->rotatedCol(rotation), r + cell->rotatedRow(rotation), CellState::Empty, nullptr);
+            auto [offsetCol, offsetRow] = cell->rotatedOffset(rotation);
+            env->changeCellUnchecked(c + offsetCol, r + offsetRow, CellState::Empty, nullptr);
         }
         rotation = newRotation;
         direction = env->rng.direction();
@@ -1000,7 +1044,8 @@ void Organism::die() {
         return;
     }
     for (const auto& cell : anatomy.cells()) {
-        env->changeCell(c + cell->rotatedCol(rotation), r + cell->rotatedRow(rotation), CellState::Food, nullptr);
+        auto [offsetCol, offsetRow] = cell->rotatedOffset(rotation);
+        env->changeCellUnchecked(c + offsetCol, r + offsetRow, CellState::Food, nullptr);
     }
     env->fossilRecord.decreasePop(species);
     living = false;
@@ -1008,7 +1053,8 @@ void Organism::die() {
 
 void Organism::updateGrid() {
     for (const auto& cell : anatomy.cells()) {
-        env->changeCell(c + cell->rotatedCol(rotation), r + cell->rotatedRow(rotation), cell->state, cell.get());
+        auto [offsetCol, offsetRow] = cell->rotatedOffset(rotation);
+        env->changeCellUnchecked(c + offsetCol, r + offsetRow, cell->state, cell.get());
     }
 }
 
@@ -1050,7 +1096,8 @@ bool Organism::update() {
 }
 
 GridCell* Organism::realCell(const BodyCell& localCell, int col, int row, Direction candidateRotation) const {
-    return env->gridMap.cellAt(col + localCell.rotatedCol(candidateRotation), row + localCell.rotatedRow(candidateRotation));
+    auto [offsetCol, offsetRow] = localCell.rotatedOffset(candidateRotation);
+    return env->gridMap.cellAt(col + offsetCol, row + offsetRow);
 }
 
 bool Organism::isNatural() const {
@@ -1090,7 +1137,7 @@ void WorldEnvironment::update() {
             removalScratch_.push_back(i);
         }
     }
-    compactOrganismsFromIndexes(removalScratch_);
+    compactOrganismsFromIndexes(removalScratch_, true);
     if (hyper.foodDropProb > 0.0) {
         generateFood();
     }
@@ -1108,12 +1155,14 @@ void WorldEnvironment::removeOrganisms(const std::vector<std::size_t>& organismI
     compactOrganismsFromIndexes(sorted);
 }
 
-void WorldEnvironment::compactOrganismsFromIndexes(std::vector<std::size_t>& organismIndexes) {
+void WorldEnvironment::compactOrganismsFromIndexes(std::vector<std::size_t>& organismIndexes, bool alreadySorted) {
     if (organismIndexes.empty()) {
         return;
     }
     int startPop = static_cast<int>(organisms.size());
-    std::sort(organismIndexes.begin(), organismIndexes.end());
+    if (!alreadySorted) {
+        std::sort(organismIndexes.begin(), organismIndexes.end());
+    }
     organismIndexes.erase(std::unique(organismIndexes.begin(), organismIndexes.end()), organismIndexes.end());
 
     std::size_t write = 0;
@@ -1181,6 +1230,11 @@ void WorldEnvironment::changeCell(int col, int row, CellState state, BodyCell* o
     if (cell == nullptr) {
         return;
     }
+    changeCellUnchecked(col, row, state, owner);
+}
+
+void WorldEnvironment::changeCellUnchecked(int col, int row, CellState state, BodyCell* owner) {
+    GridCell* cell = gridMap.cellAtUnchecked(col, row);
     bool addedNewWall = state == CellState::Wall && cell->state != CellState::Wall;
     cell->setType(state);
     cell->cellOwner = owner;
@@ -1194,7 +1248,7 @@ void WorldEnvironment::clearWalls() {
     for (const auto& wall : walls) {
         GridCell* cell = gridMap.cellAt(wall.first, wall.second);
         if (cell != nullptr && cell->state == CellState::Wall) {
-            changeCell(wall.first, wall.second, CellState::Empty, nullptr);
+            changeCellUnchecked(wall.first, wall.second, CellState::Empty, nullptr);
         }
     }
     walls.clear();
@@ -1217,7 +1271,7 @@ void WorldEnvironment::clearDeadOrganisms() {
             removalScratch_.push_back(i);
         }
     }
-    compactOrganismsFromIndexes(removalScratch_);
+    compactOrganismsFromIndexes(removalScratch_, true);
 }
 
 void WorldEnvironment::generateFood() {
@@ -1226,9 +1280,9 @@ void WorldEnvironment::generateFood() {
         if (rng.chancePercent(hyper.foodDropProb)) {
             int col = rng.intExclusive(gridMap.cols);
             int row = rng.intExclusive(gridMap.rows);
-            GridCell* cell = gridMap.cellAt(col, row);
-            if (cell != nullptr && cell->state == CellState::Empty) {
-                changeCell(col, row, CellState::Food, nullptr);
+            GridCell* cell = gridMap.cellAtUnchecked(col, row);
+            if (cell->state == CellState::Empty) {
+                changeCellUnchecked(col, row, CellState::Food, nullptr);
             }
         }
     }
@@ -1256,6 +1310,8 @@ int WorldEnvironment::organismCount() const {
 std::unique_ptr<Organism> generateRandomOrganism(WorldEnvironment& env, int organismLayers, double cellSpawnChance) {
     auto [centerCol, centerRow] = env.gridMap.center();
     auto organism = std::make_unique<Organism>(centerCol, centerRow, &env);
+    int diameter = std::max(1, (organismLayers * 2) + 1);
+    organism->anatomy.reserveCells(static_cast<std::size_t>(diameter * diameter));
     organism->anatomy.addDefaultCell(CellState::Mouth, 0, 0);
 
     for (int layer = 1; layer <= organismLayers; ++layer) {
@@ -1263,8 +1319,7 @@ std::unique_ptr<Organism> generateRandomOrganism(WorldEnvironment& env, int orga
         double spawnChance = cellSpawnChance - (static_cast<double>(layer - 1) / organismLayers);
 
         auto trySpawn = [&](int x, int y) {
-            auto neighbors = organism->anatomy.neighborsOfCell(x, y);
-            if (!neighbors.empty() && env.rng.unit() < spawnChance) {
+            if (organism->anatomy.hasNeighborAt(x, y) && env.rng.unit() < spawnChance) {
                 CellState state = livingStates()[env.rng.intExclusive(static_cast<int>(livingStates().size()))];
                 organism->anatomy.addRandomizedCell(state, x, y, env.rng);
                 someCellSpawned = true;
@@ -1284,7 +1339,7 @@ std::unique_ptr<Organism> generateRandomOrganism(WorldEnvironment& env, int orga
             trySpawn(x, y);
         }
         x = layer;
-        for (y = -layer + 1; y < layer - 1; ++y) {
+        for (y = -layer + 1; y <= layer - 1; ++y) {
             trySpawn(x, y);
         }
         if (!someCellSpawned) {

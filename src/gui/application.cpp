@@ -120,12 +120,12 @@ void WorldDocument::randomizeWalls(double densityPercent) {
     double density = std::clamp(densityPercent, 0.0, 100.0);
     for (int col = 0; col < world_.gridMap.cols; ++col) {
         for (int row = 0; row < world_.gridMap.rows; ++row) {
-            GridCell* cell = world_.gridMap.cellAt(col, row);
-            if (cell == nullptr || cell->owner != nullptr) {
+            GridCell* cell = world_.gridMap.cellAtUnchecked(col, row);
+            if (cell->owner != nullptr) {
                 continue;
             }
             if (world_.rng.chancePercent(density)) {
-                world_.changeCell(col, row, CellState::Wall, nullptr);
+                world_.changeCellUnchecked(col, row, CellState::Wall, nullptr);
             }
         }
     }
@@ -418,9 +418,10 @@ const GuiSettings& SimulationGuiModel::settings() const {
 }
 
 void SimulationGuiModel::applyCellBrush(int col, int row, CellState state, bool killBlocking, CellState ignoredState) {
+    WorldEnvironment& world = worldDocument_.world();
     for (int dc = -settings_.brushSize; dc <= settings_.brushSize; ++dc) {
         for (int dr = -settings_.brushSize; dr <= settings_.brushSize; ++dr) {
-            GridCell* cell = worldDocument_.world().gridMap.cellAt(col + dc, row + dr);
+            GridCell* cell = world.gridMap.cellAt(col + dc, row + dr);
             if (cell == nullptr) {
                 continue;
             }
@@ -432,23 +433,26 @@ void SimulationGuiModel::applyCellBrush(int col, int row, CellState state, bool 
             if (cell->state == ignoredState) {
                 continue;
             }
-            worldDocument_.world().changeCell(cell->col, cell->row, state, nullptr);
+            world.changeCellUnchecked(cell->col, cell->row, state, nullptr);
         }
     }
-    worldDocument_.world().clearDeadOrganisms();
+    world.clearDeadOrganisms();
 }
 
 void SimulationGuiModel::killBrush(int col, int row) {
+    WorldEnvironment& world = worldDocument_.world();
     std::unordered_set<Organism*> killed;
+    int brushDiameter = (settings_.brushSize * 2) + 1;
+    killed.reserve(static_cast<std::size_t>(brushDiameter * brushDiameter));
     for (int dc = -settings_.brushSize; dc <= settings_.brushSize; ++dc) {
         for (int dr = -settings_.brushSize; dr <= settings_.brushSize; ++dr) {
-            GridCell* cell = worldDocument_.world().gridMap.cellAt(col + dc, row + dr);
+            GridCell* cell = world.gridMap.cellAt(col + dc, row + dr);
             if (cell != nullptr && cell->owner != nullptr && killed.insert(cell->owner).second) {
                 cell->owner->die();
             }
         }
     }
-    worldDocument_.world().clearDeadOrganisms();
+    world.clearDeadOrganisms();
 }
 
 } // namespace lifeengine::gui

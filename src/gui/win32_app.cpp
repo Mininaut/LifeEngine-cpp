@@ -88,6 +88,10 @@ int rectHeight(const RECT& rect) {
     return static_cast<int>(rect.bottom - rect.top);
 }
 
+int rectWidth(const RECT& rect) {
+    return static_cast<int>(rect.right - rect.left);
+}
+
 std::wstring widen(const std::string& text) {
     return std::wstring(text.begin(), text.end());
 }
@@ -261,6 +265,15 @@ public:
         wc.hbrBackground = nullptr;
         RegisterClassExW(&wc);
 
+        WNDCLASSEXW panelWc{};
+        panelWc.cbSize = sizeof(panelWc);
+        panelWc.lpfnWndProc = &Win32GuiApp::panelProc;
+        panelWc.hInstance = instance;
+        panelWc.lpszClassName = L"LifeEnginePanelWindow";
+        panelWc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+        panelWc.hbrBackground = nullptr;
+        RegisterClassExW(&panelWc);
+
         hwnd_ = CreateWindowExW(
             0,
             wc.lpszClassName,
@@ -280,6 +293,7 @@ public:
         }
 
         createBrushes();
+        createPanelWindow(instance);
         createControls();
         layoutControls();
         refreshControlsFromModel();
@@ -318,6 +332,23 @@ private:
         return app->handleMessage(message, wParam, lParam);
     }
 
+    static LRESULT CALLBACK panelProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+        Win32GuiApp* app = nullptr;
+        if (message == WM_NCCREATE) {
+            auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            app = static_cast<Win32GuiApp*>(create->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
+            app->panelWindow_ = hwnd;
+        } else {
+            app = reinterpret_cast<Win32GuiApp*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        }
+
+        if (app == nullptr) {
+            return DefWindowProcW(hwnd, message, wParam, lParam);
+        }
+        return app->handlePanelMessage(message, wParam, lParam);
+    }
+
     LRESULT handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         switch (message) {
         case WM_SIZE:
@@ -347,15 +378,9 @@ private:
             onPanelScroll(LOWORD(wParam));
             return 0;
         case WM_LBUTTONDOWN:
-            if (onEditorPointer(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), false)) {
-                return 0;
-            }
             onPointer(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), false, true);
             return 0;
         case WM_RBUTTONDOWN:
-            if (onEditorPointer(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), true)) {
-                return 0;
-            }
             onPointer(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), true, true);
             return 0;
         case WM_MBUTTONDOWN:
@@ -401,6 +426,64 @@ private:
         default:
             return DefWindowProcW(hwnd_, message, wParam, lParam);
         }
+    }
+
+    LRESULT handlePanelMessage(UINT message, WPARAM wParam, LPARAM lParam) {
+        switch (message) {
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_COMMAND:
+            onCommand(LOWORD(wParam));
+            return 0;
+        case WM_DRAWITEM:
+            return drawOwnerControl(reinterpret_cast<DRAWITEMSTRUCT*>(lParam)) ? TRUE : FALSE;
+        case WM_CTLCOLORSTATIC:
+            return reinterpret_cast<LRESULT>(brushStaticControl(reinterpret_cast<HDC>(wParam)));
+        case WM_CTLCOLOREDIT:
+            return reinterpret_cast<LRESULT>(brushEditControl(reinterpret_cast<HDC>(wParam)));
+        case WM_CTLCOLORBTN:
+            return reinterpret_cast<LRESULT>(panelBrush_);
+        case WM_HSCROLL:
+            onScroll(reinterpret_cast<HWND>(lParam));
+            return 0;
+        case WM_MOUSEWHEEL:
+            onMouseWheel(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), GET_WHEEL_DELTA_WPARAM(wParam));
+            return 0;
+        case WM_LBUTTONDOWN:
+            onEditorPointer(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), false);
+            return 0;
+        case WM_RBUTTONDOWN:
+            onEditorPointer(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), true);
+            return 0;
+        case WM_KEYDOWN:
+            onKeyDown(wParam);
+            return 0;
+        case WM_PAINT:
+            paintPanel();
+            return 0;
+        default:
+            return DefWindowProcW(panelWindow_, message, wParam, lParam);
+        }
+    }
+
+    void createPanelWindow(HINSTANCE instance) {
+        panelWindow_ = CreateWindowExW(
+            WS_EX_COMPOSITED,
+            L"LifeEnginePanelWindow",
+            L"",
+            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
+            0,
+            0,
+            1,
+            1,
+            hwnd_,
+            nullptr,
+            instance,
+            this);
+    }
+
+    HWND controlParent() const {
+        return panelWindow_ != nullptr ? panelWindow_ : hwnd_;
     }
 
     void createControls() {
@@ -461,43 +544,48 @@ private:
         editorLabel_ = label(L"Organism Editor");
         editorHintLabel_ = label(L"Left: add/rotate eye  Right: remove");
 
-        CheckRadioButton(hwnd_, IdFoodTool, IdInspectTool, IdFoodTool);
-        CheckRadioButton(hwnd_, IdEditorMouth, IdEditorEye, IdEditorMouth);
+        CheckRadioButton(controlParent(), IdFoodTool, IdInspectTool, IdFoodTool);
+        CheckRadioButton(controlParent(), IdEditorMouth, IdEditorEye, IdEditorMouth);
     }
 
     HWND button(const wchar_t* text, int id) {
-        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_OWNERDRAW, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
+        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_OWNERDRAW, 0, 0, 1, 1, controlParent(), reinterpret_cast<HMENU>(id), nullptr, nullptr);
         setFont(control);
         return control;
     }
 
     HWND radio(const wchar_t* text, int id) {
-        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_RADIOBUTTON | BS_OWNERDRAW, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
+        DWORD style = WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_OWNERDRAW;
+        if (id == IdFoodTool || id == IdEditorMouth) {
+            style |= WS_GROUP | WS_TABSTOP;
+        }
+        HWND control = CreateWindowW(L"BUTTON", text, style, 0, 0, 1, 1, controlParent(), reinterpret_cast<HMENU>(id), nullptr, nullptr);
         setFont(control);
         return control;
     }
 
     HWND checkbox(const wchar_t* text, int id, bool checked) {
-        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_CHECKBOX | BS_OWNERDRAW, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
+        HWND control = CreateWindowW(L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_CHECKBOX | BS_OWNERDRAW, 0, 0, 1, 1, controlParent(), reinterpret_cast<HMENU>(id), nullptr, nullptr);
+        setCheckboxState(id, checked);
         SendMessageW(control, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
         setFont(control);
         return control;
     }
 
     HWND edit(const wchar_t* text, int id) {
-        HWND control = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", text, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
+        HWND control = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", text, WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL, 0, 0, 1, 1, controlParent(), reinterpret_cast<HMENU>(id), nullptr, nullptr);
         setFont(control);
         return control;
     }
 
     HWND label(const wchar_t* text) {
-        HWND control = CreateWindowW(L"STATIC", text, WS_CHILD | WS_VISIBLE, 0, 0, 1, 1, hwnd_, nullptr, nullptr, nullptr);
+        HWND control = CreateWindowW(L"STATIC", text, WS_CHILD | WS_VISIBLE, 0, 0, 1, 1, controlParent(), nullptr, nullptr, nullptr);
         setFont(control);
         return control;
     }
 
     HWND trackbar(int id, int min, int max, int value) {
-        HWND control = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS, 0, 0, 1, 1, hwnd_, reinterpret_cast<HMENU>(id), nullptr, nullptr);
+        HWND control = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS, 0, 0, 1, 1, controlParent(), reinterpret_cast<HMENU>(id), nullptr, nullptr);
         SendMessageW(control, TBM_SETRANGE, TRUE, MAKELPARAM(min, max));
         SendMessageW(control, TBM_SETPOS, TRUE, value);
         setFont(control);
@@ -538,13 +626,13 @@ private:
         GetWindowTextW(item->hwndItem, text, 128);
         bool pressed = (item->itemState & ODS_SELECTED) != 0;
         bool focused = (item->itemState & ODS_FOCUS) != 0;
-        bool checkedState = SendMessageW(item->hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED;
         int id = static_cast<int>(item->CtlID);
+        bool checkedState = isCheckboxId(id) ? checkboxState(id) : SendMessageW(item->hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED;
 
         if (isCheckboxId(id)) {
             drawCheckControl(item->hDC, item->rcItem, text, checkedState, pressed, focused);
         } else {
-            bool selected = checkedState || isActiveToolButton(id) || isActiveEditorToolButton(id);
+            bool selected = checkedState || isActiveToggleButton(id) || isActiveToolButton(id) || isActiveEditorToolButton(id);
             bool accent = selected || id == IdPlay || id == IdApplyGrid || id == IdApplyRules || id == IdDropEditor;
             drawPillButton(item->hDC, item->rcItem, text, selected, pressed, focused, accent);
         }
@@ -552,25 +640,36 @@ private:
     }
 
     void drawPillButton(HDC hdc, RECT rect, const wchar_t* text, bool checkedState, bool pressed, bool focused, bool accent) {
-        COLORREF fill = checkedState ? RGB(44, 112, 174) : (accent ? RGB(55, 67, 82) : RGB(38, 45, 55));
-        COLORREF border = checkedState ? RGB(91, 169, 238) : RGB(74, 86, 102);
+        FillRect(hdc, &rect, panelBrush_);
+        RECT buttonRect = rect;
+        InflateRect(&buttonRect, -1, -1);
+
+        COLORREF fill = checkedState ? RGB(32, 112, 174) : (accent ? RGB(52, 63, 78) : RGB(35, 42, 52));
+        COLORREF border = checkedState ? RGB(106, 180, 238) : RGB(70, 83, 100);
         COLORREF textColor = RGB(237, 242, 248);
         if (pressed) {
-            fill = checkedState ? RGB(34, 91, 145) : RGB(30, 36, 45);
+            fill = checkedState ? RGB(26, 94, 150) : RGB(27, 33, 42);
         }
         if (focused) {
-            border = RGB(122, 182, 235);
+            border = checkedState ? RGB(156, 211, 252) : RGB(126, 164, 205);
         }
 
         HBRUSH brush = CreateSolidBrush(fill);
         HPEN pen = CreatePen(PS_SOLID, 1, border);
         HGDIOBJ oldBrush = SelectObject(hdc, brush);
         HGDIOBJ oldPen = SelectObject(hdc, pen);
-        RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, 8, 8);
+        RoundRect(hdc, buttonRect.left, buttonRect.top, buttonRect.right, buttonRect.bottom, 8, 8);
         SelectObject(hdc, oldPen);
         SelectObject(hdc, oldBrush);
         DeleteObject(pen);
         DeleteObject(brush);
+
+        if (checkedState) {
+            RECT shine{buttonRect.left + 2, buttonRect.top + 2, buttonRect.right - 2, buttonRect.top + 3};
+            HBRUSH shineBrush = CreateSolidBrush(RGB(93, 165, 223));
+            FillRect(hdc, &shine, shineBrush);
+            DeleteObject(shineBrush);
+        }
 
         RECT textRect = rect;
         InflateRect(&textRect, -8, 0);
@@ -581,36 +680,40 @@ private:
 
     void drawCheckControl(HDC hdc, RECT rect, const wchar_t* text, bool checkedState, bool pressed, bool focused) {
         FillRect(hdc, &rect, panelBrush_);
-        RECT box{rect.left + 2, rect.top + 5, rect.left + 18, rect.top + 21};
-        COLORREF fill = checkedState ? RGB(64, 156, 92) : RGB(33, 39, 48);
-        COLORREF border = checkedState ? RGB(132, 232, 158) : (focused ? RGB(122, 182, 235) : RGB(79, 91, 107));
+
+        int boxSize = std::min(17, std::max(14, rectHeight(rect) - 10));
+        int boxTop = rect.top + ((rectHeight(rect) - boxSize) / 2);
+        RECT box{rect.left + 3, boxTop, rect.left + 3 + boxSize, boxTop + boxSize};
+        COLORREF fill = checkedState ? RGB(42, 148, 91) : RGB(21, 26, 33);
+        COLORREF border = checkedState ? RGB(105, 211, 150) : (focused ? RGB(126, 164, 205) : RGB(84, 98, 118));
+        COLORREF textColor = checkedState ? RGB(231, 241, 236) : RGB(203, 212, 224);
         if (pressed) {
-            fill = checkedState ? RGB(48, 126, 75) : RGB(28, 34, 42);
+            fill = checkedState ? RGB(34, 122, 76) : RGB(16, 20, 27);
         }
 
         HBRUSH brush = CreateSolidBrush(fill);
         HPEN pen = CreatePen(PS_SOLID, 1, border);
         HGDIOBJ oldBrush = SelectObject(hdc, brush);
         HGDIOBJ oldPen = SelectObject(hdc, pen);
-        RoundRect(hdc, box.left, box.top, box.right, box.bottom, 5, 5);
+        RoundRect(hdc, box.left, box.top, box.right, box.bottom, 4, 4);
         SelectObject(hdc, oldPen);
         SelectObject(hdc, oldBrush);
         DeleteObject(pen);
         DeleteObject(brush);
 
         if (checkedState) {
-            HPEN markPen = CreatePen(PS_SOLID, 2, RGB(240, 247, 255));
+            HPEN markPen = CreatePen(PS_SOLID, 2, RGB(247, 255, 250));
             HGDIOBJ oldMark = SelectObject(hdc, markPen);
-            MoveToEx(hdc, box.left + 4, box.top + 8, nullptr);
-            LineTo(hdc, box.left + 7, box.top + 11);
-            LineTo(hdc, box.right - 3, box.top + 4);
+            MoveToEx(hdc, box.left + 4, box.top + (boxSize / 2), nullptr);
+            LineTo(hdc, box.left + (boxSize / 2) - 1, box.bottom - 4);
+            LineTo(hdc, box.right - 4, box.top + 4);
             SelectObject(hdc, oldMark);
             DeleteObject(markPen);
         }
 
-        RECT textRect{rect.left + 24, rect.top, rect.right, rect.bottom};
+        RECT textRect{box.right + 8, rect.top, rect.right, rect.bottom};
         SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, RGB(218, 224, 232));
+        SetTextColor(hdc, textColor);
         DrawTextW(hdc, text, -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
 
@@ -626,6 +729,18 @@ private:
     bool isEditorToolId(int id) const {
         return id == IdEditorMouth || id == IdEditorProducer || id == IdEditorMover ||
                id == IdEditorKiller || id == IdEditorArmor || id == IdEditorEye;
+    }
+
+    bool isActiveToggleButton(int id) const {
+        if (id == IdRender) {
+            std::lock_guard<std::recursive_mutex> lock(modelMutex_);
+            return model_.settings().renderEnabled;
+        }
+        if (id == IdPlay) {
+            std::lock_guard<std::recursive_mutex> lock(modelMutex_);
+            return model_.settings().running;
+        }
+        return false;
     }
 
     bool isActiveToolButton(int id) const {
@@ -653,13 +768,15 @@ private:
     }
 
     void selectTool(ToolMode tool, int controlId) {
-        CheckRadioButton(hwnd_, IdFoodTool, IdInspectTool, controlId);
+        CheckRadioButton(controlParent(), IdFoodTool, IdInspectTool, controlId);
+        SendMessageW(GetDlgItem(controlParent(), controlId), BM_SETCHECK, BST_CHECKED, 0);
         model_.setTool(tool);
         invalidateToolButtons();
     }
 
     void selectEditorState(CellState state, int controlId) {
-        CheckRadioButton(hwnd_, IdEditorMouth, IdEditorEye, controlId);
+        CheckRadioButton(controlParent(), IdEditorMouth, IdEditorEye, controlId);
+        SendMessageW(GetDlgItem(controlParent(), controlId), BM_SETCHECK, BST_CHECKED, 0);
         selectedEditorState_ = state;
         invalidateEditorToolButtons();
     }
@@ -684,8 +801,10 @@ private:
         if (control == nullptr) {
             return;
         }
-        bool isChecked = SendMessageW(control, BM_GETCHECK, 0, 0) == BST_CHECKED;
-        SendMessageW(control, BM_SETCHECK, isChecked ? BST_UNCHECKED : BST_CHECKED, 0);
+        int id = GetDlgCtrlID(control);
+        bool next = !checkboxState(id);
+        setCheckboxState(id, next);
+        SendMessageW(control, BM_SETCHECK, next ? BST_CHECKED : BST_UNCHECKED, 0);
         invalidateControl(control);
     }
 
@@ -697,7 +816,16 @@ private:
         panelRect_ = client;
         panelRect_.left = canvasRect_.right;
 
-        int x = panelRect_.left + kMargin;
+        if (panelWindow_ != nullptr) {
+            RECT nextPanelWindowRect{panelRect_.left, panelRect_.top, panelRect_.right, panelRect_.bottom};
+            if (!EqualRect(&panelWindowRect_, &nextPanelWindowRect)) {
+                SetWindowPos(panelWindow_, nullptr, panelRect_.left, panelRect_.top, rectWidth(panelRect_), rectHeight(panelRect_),
+                             SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                panelWindowRect_ = nextPanelWindowRect;
+            }
+        }
+
+        int x = kMargin;
         int y = kMargin - panelScroll_;
         int w = kPanelWidth - (kMargin * 2);
         int row = 28;
@@ -851,7 +979,28 @@ private:
 
     void move(HWND control, int x, int y, int width, int height) {
         if (control != nullptr) {
-            MoveWindow(control, x, y, width, height, FALSE);
+            UINT flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOREDRAW;
+            if (deferredLayout_ != nullptr) {
+                HDWP next = DeferWindowPos(deferredLayout_, control, nullptr, x, y, width, height, flags);
+                if (next != nullptr) {
+                    deferredLayout_ = next;
+                    return;
+                }
+                EndDeferWindowPos(deferredLayout_);
+                deferredLayout_ = nullptr;
+            }
+            SetWindowPos(control, nullptr, x, y, width, height, flags);
+        }
+    }
+
+    void beginDeferredLayout() {
+        deferredLayout_ = BeginDeferWindowPos(64);
+    }
+
+    void endDeferredLayout() {
+        if (deferredLayout_ != nullptr) {
+            EndDeferWindowPos(deferredLayout_);
+            deferredLayout_ = nullptr;
         }
     }
 
@@ -971,8 +1120,14 @@ private:
             return;
         }
         panelScroll_ = clamped;
+        SendMessageW(controlParent(), WM_SETREDRAW, FALSE, 0);
+        beginDeferredLayout();
         layoutControls();
-        InvalidateRect(hwnd_, &panelRect_, TRUE);
+        endDeferredLayout();
+        SendMessageW(controlParent(), WM_SETREDRAW, TRUE, 0);
+        if (panelWindow_ != nullptr) {
+            RedrawWindow(panelWindow_, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_NOERASE);
+        }
     }
 
     void syncPanelScrollbar() {
@@ -992,6 +1147,7 @@ private:
         case IdPlay:
             model_.toggleRunning();
             setText(playButton_, model_.settings().running ? L"Pause" : L"Play");
+            invalidateControl(playButton_);
             break;
         case IdStep:
             model_.stepOnce();
@@ -1052,6 +1208,7 @@ private:
         case IdRender:
             model_.toggleRenderEnabled();
             setText(renderButton_, model_.settings().renderEnabled ? L"Render On" : L"Render Off");
+            invalidateControl(renderButton_);
             InvalidateRect(hwnd_, &canvasRect_, FALSE);
             break;
         case IdRandomWalls:
@@ -1074,7 +1231,7 @@ private:
         case IdMoversProduceCheck:
         case IdFoodBlocksCheck:
         case IdUseGlobalMutationCheck:
-            toggleOwnerCheckbox(GetDlgItem(hwnd_, id));
+            toggleOwnerCheckbox(GetDlgItem(controlParent(), id));
             break;
         default:
             break;
@@ -1274,15 +1431,50 @@ private:
         world.hyper.globalMutability = readInt(globalMutationEdit_, world.hyper.globalMutability);
         world.hyper.foodDropProb = readDouble(foodDropEdit_, world.hyper.foodDropProb);
         world.hyper.maxOrganisms = readInt(maxOrgEdit_, world.hyper.maxOrganisms);
-        world.hyper.rotationEnabled = checked(rotationCheck_);
-        world.hyper.instaKill = checked(instaKillCheck_);
-        world.hyper.moversCanProduce = checked(moversProduceCheck_);
-        world.hyper.foodBlocksReproduction = checked(foodBlocksCheck_);
-        world.hyper.useGlobalMutability = checked(useGlobalMutationCheck_);
+        world.hyper.rotationEnabled = checkboxState(IdRotationCheck);
+        world.hyper.instaKill = checkboxState(IdInstaKillCheck);
+        world.hyper.moversCanProduce = checkboxState(IdMoversProduceCheck);
+        world.hyper.foodBlocksReproduction = checkboxState(IdFoodBlocksCheck);
+        world.hyper.useGlobalMutability = checkboxState(IdUseGlobalMutationCheck);
     }
 
-    bool checked(HWND control) const {
-        return SendMessageW(control, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    bool checkboxState(int id) const {
+        switch (id) {
+        case IdRotationCheck:
+            return rotationEnabled_;
+        case IdInstaKillCheck:
+            return instaKillEnabled_;
+        case IdMoversProduceCheck:
+            return moversProduceEnabled_;
+        case IdFoodBlocksCheck:
+            return foodBlocksEnabled_;
+        case IdUseGlobalMutationCheck:
+            return useGlobalMutationEnabled_;
+        default:
+            return false;
+        }
+    }
+
+    void setCheckboxState(int id, bool checked) {
+        switch (id) {
+        case IdRotationCheck:
+            rotationEnabled_ = checked;
+            break;
+        case IdInstaKillCheck:
+            instaKillEnabled_ = checked;
+            break;
+        case IdMoversProduceCheck:
+            moversProduceEnabled_ = checked;
+            break;
+        case IdFoodBlocksCheck:
+            foodBlocksEnabled_ = checked;
+            break;
+        case IdUseGlobalMutationCheck:
+            useGlobalMutationEnabled_ = checked;
+            break;
+        default:
+            break;
+        }
     }
 
     int readInt(HWND control, int fallback) const {
@@ -1360,16 +1552,22 @@ private:
     void paint() {
         PAINTSTRUCT ps{};
         HDC hdc = BeginPaint(hwnd_, &ps);
-        if (rectsIntersect(ps.rcPaint, panelRect_)) {
-            FillRect(hdc, &panelRect_, panelBrush_);
-        }
-        if (rectsIntersect(ps.rcPaint, editorRect_)) {
-            paintEditor(hdc);
-        }
         if (rectsIntersect(ps.rcPaint, canvasRect_)) {
             paintCanvasBuffered(hdc);
         }
         EndPaint(hwnd_, &ps);
+    }
+
+    void paintPanel() {
+        PAINTSTRUCT ps{};
+        HDC hdc = BeginPaint(panelWindow_, &ps);
+        RECT client{};
+        GetClientRect(panelWindow_, &client);
+        FillRect(hdc, &client, panelBrush_);
+        if (rectsIntersect(ps.rcPaint, editorRect_)) {
+            paintEditor(hdc);
+        }
+        EndPaint(panelWindow_, &ps);
     }
 
     bool rectsIntersect(const RECT& a, const RECT& b) const {
@@ -1581,12 +1779,14 @@ private:
 
     SimulationGuiModel model_;
     HWND hwnd_ = nullptr;
+    HWND panelWindow_ = nullptr;
     HFONT font_ = nullptr;
     mutable std::recursive_mutex modelMutex_;
     std::atomic<bool> simulationThreadRunning_{false};
     std::thread simulationThread_;
     RECT canvasRect_{};
     RECT panelRect_{};
+    RECT panelWindowRect_{};
     RECT editorRect_{};
     bool mouseDown_ = false;
     bool panning_ = false;
@@ -1596,6 +1796,11 @@ private:
     int lastPanY_ = 0;
     Viewport viewport_;
     CellState selectedEditorState_ = CellState::Mouth;
+    bool rotationEnabled_ = true;
+    bool instaKillEnabled_ = false;
+    bool moversProduceEnabled_ = false;
+    bool foodBlocksEnabled_ = true;
+    bool useGlobalMutationEnabled_ = false;
     std::chrono::steady_clock::time_point lastTick_;
     std::chrono::steady_clock::time_point lastMetricsTick_;
     std::chrono::steady_clock::time_point lastCanvasPaintRequest_;
@@ -1625,6 +1830,7 @@ private:
     std::uint32_t* canvasPixels_ = nullptr;
     int canvasBufferWidth_ = 0;
     int canvasBufferHeight_ = 0;
+    HDWP deferredLayout_ = nullptr;
 
     HWND playButton_ = nullptr;
     HWND stepButton_ = nullptr;
