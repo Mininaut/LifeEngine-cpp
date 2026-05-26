@@ -1,5 +1,7 @@
 # LifeEngine C++ Core
 
+# That vibecoded, and code bad
+
 This directory contains a C++17/MinGW64 port of the LifeEngine simulation core.
 It intentionally excludes the browser DOM, jQuery controls, webpack bundle, and
 canvas renderer. The port focuses on the deterministic model: grid ownership,
