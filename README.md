@@ -1,4 +1,4 @@
-# LifeEngine C++ Core
+# LifeEngine C++
 
 # That vibecoded, and code bad
 
