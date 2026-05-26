@@ -842,7 +842,7 @@ void Organism::reproduce() {
             if (child->anatomy.hasEyes) {
                 child->brain.mutate(env->rng);
             }
-            child->moveRange += env->rng.intInclusive(-2, 1);
+            child->moveRange += env->rng.intInclusive(-2, 2);
             child->moveRange = std::max(1, child->moveRange);
         } else {
             mutated = child->mutate();
