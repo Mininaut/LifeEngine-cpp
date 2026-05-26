@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <optional>
 #include <random>
@@ -218,10 +219,14 @@ public:
     int birthDistance = 4;
 
 private:
+    using CellCoordKey = std::uint64_t;
+
+    BodyCell* addCell(std::unique_ptr<BodyCell> cell);
     void markTypePresent(CellState state);
 
     Organism* owner_ = nullptr;
     std::vector<std::unique_ptr<BodyCell>> cells_;
+    std::unordered_map<CellCoordKey, BodyCell*> cellsByCoord_;
 };
 
 class BodyCell {
@@ -280,19 +285,18 @@ public:
 
     int minDiscard = 10;
     std::size_t recordSizeLimit = 500;
-    std::vector<int> tickRecord;
-    std::vector<int> popCounts;
-    std::vector<int> speciesCounts;
-    std::vector<double> averageMutRates;
-    std::vector<double> averageCells;
-    std::vector<std::array<double, CellStateCount>> averageCellCounts;
+    std::deque<int> tickRecord;
+    std::deque<int> popCounts;
+    std::deque<int> speciesCounts;
+    std::deque<double> averageMutRates;
+    std::deque<double> averageCells;
+    std::deque<std::array<double, CellStateCount>> averageCellCounts;
     std::unordered_map<std::string, std::shared_ptr<Species>> extantSpecies;
     std::unordered_map<std::string, std::shared_ptr<Species>> extinctSpecies;
 
 private:
     WorldEnvironment* env_ = nullptr;
-
-    void reserveRecordCapacity();
+    void trimRecordOverflow();
 };
 
 class Organism {

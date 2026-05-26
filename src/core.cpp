@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace lifeengine {
 namespace {
@@ -79,6 +81,11 @@ std::string randomSpeciesName(Random& rng) {
 
 Decision randomDecisionValue(Random& rng) {
     return static_cast<Decision>(rng.intExclusive(3));
+}
+
+std::uint64_t cellCoordKey(int col, int row) {
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(col)) << 32) |
+           static_cast<std::uint32_t>(row);
 }
 
 } // namespace
@@ -327,6 +334,7 @@ void Anatomy::setOwner(Organism* owner) {
 
 void Anatomy::clear() {
     cells_.clear();
+    cellsByCoord_.clear();
     isProducer = false;
     isMover = false;
     hasEyes = false;
@@ -335,6 +343,7 @@ void Anatomy::clear() {
 
 void Anatomy::reserveCells(std::size_t count) {
     cells_.reserve(count);
+    cellsByCoord_.reserve(count);
 }
 
 bool Anatomy::canAddCellAt(int col, int row) const {
@@ -344,10 +353,7 @@ bool Anatomy::canAddCellAt(int col, int row) const {
 BodyCell* Anatomy::addDefaultCell(CellState state, int col, int row) {
     auto cell = std::make_unique<BodyCell>(state, owner_, col, row);
     cell->initDefault();
-    BodyCell* result = cell.get();
-    cells_.push_back(std::move(cell));
-    markTypePresent(state);
-    return result;
+    return addCell(std::move(cell));
 }
 
 BodyCell* Anatomy::addRandomizedCell(CellState state, int col, int row, Random& rng) {
@@ -356,19 +362,13 @@ BodyCell* Anatomy::addRandomizedCell(CellState state, int col, int row, Random& 
     }
     auto cell = std::make_unique<BodyCell>(state, owner_, col, row);
     cell->initRandom(rng);
-    BodyCell* result = cell.get();
-    cells_.push_back(std::move(cell));
-    markTypePresent(state);
-    return result;
+    return addCell(std::move(cell));
 }
 
 BodyCell* Anatomy::addInheritedCell(const BodyCell& parent) {
     auto cell = std::make_unique<BodyCell>(parent.state, owner_, parent.locCol, parent.locRow);
     cell->initInherit(parent);
-    BodyCell* result = cell.get();
-    cells_.push_back(std::move(cell));
-    markTypePresent(parent.state);
-    return result;
+    return addCell(std::move(cell));
 }
 
 BodyCell* Anatomy::replaceCell(CellState state, int col, int row, bool randomize, Random& rng) {
@@ -383,8 +383,15 @@ bool Anatomy::removeCell(int col, int row, bool allowCenterRemoval) {
     if (col == 0 && row == 0 && !allowCenterRemoval) {
         return false;
     }
+    auto coordIt = cellsByCoord_.find(cellCoordKey(col, row));
+    if (coordIt == cellsByCoord_.end()) {
+        checkTypeChange();
+        return true;
+    }
+    BodyCell* target = coordIt->second;
     for (auto it = cells_.begin(); it != cells_.end(); ++it) {
-        if ((*it)->locCol == col && (*it)->locRow == row) {
+        if (it->get() == target) {
+            cellsByCoord_.erase(coordIt);
             cells_.erase(it);
             checkTypeChange();
             return true;
@@ -395,21 +402,13 @@ bool Anatomy::removeCell(int col, int row, bool allowCenterRemoval) {
 }
 
 BodyCell* Anatomy::getLocalCell(int col, int row) {
-    for (auto& cell : cells_) {
-        if (cell->locCol == col && cell->locRow == row) {
-            return cell.get();
-        }
-    }
-    return nullptr;
+    auto it = cellsByCoord_.find(cellCoordKey(col, row));
+    return it == cellsByCoord_.end() ? nullptr : it->second;
 }
 
 const BodyCell* Anatomy::getLocalCell(int col, int row) const {
-    for (const auto& cell : cells_) {
-        if (cell->locCol == col && cell->locRow == row) {
-            return cell.get();
-        }
-    }
-    return nullptr;
+    auto it = cellsByCoord_.find(cellCoordKey(col, row));
+    return it == cellsByCoord_.end() ? nullptr : it->second;
 }
 
 bool Anatomy::hasNeighborAt(int col, int row) const {
@@ -494,6 +493,14 @@ void Anatomy::markTypePresent(CellState state) {
     } else if (state == CellState::Eye) {
         hasEyes = true;
     }
+}
+
+BodyCell* Anatomy::addCell(std::unique_ptr<BodyCell> cell) {
+    BodyCell* result = cell.get();
+    cells_.push_back(std::move(cell));
+    cellsByCoord_[cellCoordKey(result->locCol, result->locRow)] = result;
+    markTypePresent(result->state);
+    return result;
 }
 
 BodyCell::BodyCell(CellState initialState, Organism* initialOrg, int initialLocCol, int initialLocRow)
@@ -677,7 +684,6 @@ void FossilRecord::setEnv(WorldEnvironment* env) {
     averageMutRates.clear();
     averageCells.clear();
     averageCellCounts.clear();
-    reserveRecordCapacity();
     updateData();
 }
 
@@ -749,7 +755,6 @@ void FossilRecord::clearRecord() {
     averageMutRates.clear();
     averageCells.clear();
     averageCellCounts.clear();
-    reserveRecordCapacity();
     updateData();
 }
 
@@ -757,21 +762,12 @@ void FossilRecord::updateData() {
     if (env_ == nullptr) {
         return;
     }
-    reserveRecordCapacity();
     tickRecord.push_back(env_->totalTicks);
     popCounts.push_back(static_cast<int>(env_->organisms.size()));
     speciesCounts.push_back(numExtantSpecies());
     averageMutRates.push_back(env_->averageMutability());
     calcCellCountAverages();
-    if (tickRecord.size() > recordSizeLimit) {
-        std::size_t overflow = tickRecord.size() - recordSizeLimit;
-        tickRecord.erase(tickRecord.begin(), tickRecord.begin() + static_cast<std::ptrdiff_t>(overflow));
-        popCounts.erase(popCounts.begin(), popCounts.begin() + static_cast<std::ptrdiff_t>(overflow));
-        speciesCounts.erase(speciesCounts.begin(), speciesCounts.begin() + static_cast<std::ptrdiff_t>(overflow));
-        averageMutRates.erase(averageMutRates.begin(), averageMutRates.begin() + static_cast<std::ptrdiff_t>(overflow));
-        averageCells.erase(averageCells.begin(), averageCells.begin() + static_cast<std::ptrdiff_t>(overflow));
-        averageCellCounts.erase(averageCellCounts.begin(), averageCellCounts.begin() + static_cast<std::ptrdiff_t>(overflow));
-    }
+    trimRecordOverflow();
 }
 
 void FossilRecord::calcCellCountAverages() {
@@ -804,24 +800,24 @@ void FossilRecord::calcCellCountAverages() {
     averageCellCounts.push_back(cellCounts);
 }
 
-void FossilRecord::reserveRecordCapacity() {
+void FossilRecord::trimRecordOverflow() {
     if (recordSizeLimit == 0) {
+        tickRecord.clear();
+        popCounts.clear();
+        speciesCounts.clear();
+        averageMutRates.clear();
+        averageCells.clear();
+        averageCellCounts.clear();
         return;
     }
-    if (tickRecord.capacity() >= recordSizeLimit &&
-        popCounts.capacity() >= recordSizeLimit &&
-        speciesCounts.capacity() >= recordSizeLimit &&
-        averageMutRates.capacity() >= recordSizeLimit &&
-        averageCells.capacity() >= recordSizeLimit &&
-        averageCellCounts.capacity() >= recordSizeLimit) {
-        return;
+    while (tickRecord.size() > recordSizeLimit) {
+        tickRecord.pop_front();
+        popCounts.pop_front();
+        speciesCounts.pop_front();
+        averageMutRates.pop_front();
+        averageCells.pop_front();
+        averageCellCounts.pop_front();
     }
-    tickRecord.reserve(recordSizeLimit);
-    popCounts.reserve(recordSizeLimit);
-    speciesCounts.reserve(recordSizeLimit);
-    averageMutRates.reserve(recordSizeLimit);
-    averageCells.reserve(recordSizeLimit);
-    averageCellCounts.reserve(recordSizeLimit);
 }
 
 Organism::Organism(int col, int row, WorldEnvironment* initialEnv, const Organism* parent)
@@ -1105,13 +1101,12 @@ bool Organism::isNatural() const {
     if (anatomy.cells().empty()) {
         return false;
     }
-    for (std::size_t i = 0; i < anatomy.cells().size(); ++i) {
-        const BodyCell& cell = *anatomy.cells()[i];
-        for (std::size_t j = i + 1; j < anatomy.cells().size(); ++j) {
-            const BodyCell& other = *anatomy.cells()[j];
-            if (cell.locCol == other.locCol && cell.locRow == other.locRow) {
-                return false;
-            }
+    std::unordered_set<std::uint64_t> occupied;
+    occupied.reserve(anatomy.cells().size());
+    for (const auto& localCell : anatomy.cells()) {
+        const BodyCell& cell = *localCell;
+        if (!occupied.insert(cellCoordKey(cell.locCol, cell.locRow)).second) {
+            return false;
         }
         if (cell.locCol == 0 && cell.locRow == 0) {
             foundCenter = true;

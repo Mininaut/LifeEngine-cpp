@@ -82,7 +82,6 @@ void testFossilRecordCapWorkload() {
     check(env.fossilRecord.popCounts.size() == 128, "fossil workload caps pop record");
     check(env.fossilRecord.averageCellCounts.size() == 128, "fossil workload caps cell count record");
     check(env.fossilRecord.tickRecord.front() == 872, "fossil workload drops oldest records");
-    check(env.fossilRecord.tickRecord.capacity() >= env.fossilRecord.recordSizeLimit, "fossil workload reserves capacity");
 }
 
 } // namespace

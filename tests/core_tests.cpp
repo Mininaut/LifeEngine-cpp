@@ -255,7 +255,6 @@ void testFossilRecordCap() {
 
     check(env.fossilRecord.tickRecord.size() == 5, "fossil record cap");
     check(env.fossilRecord.tickRecord.front() == 7, "fossil record drops oldest");
-    check(env.fossilRecord.tickRecord.capacity() >= env.fossilRecord.recordSizeLimit, "fossil record reserves cap");
 }
 
 void testFossilRecordExactCapThenOverflow() {
